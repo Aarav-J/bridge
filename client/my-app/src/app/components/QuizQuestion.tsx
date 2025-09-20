@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from 'react';
-import { QuizQuestion as QuizQuestionType, QuizAnswer } from '@/data/quizData';
+import { QuizQuestion as QuizQuestionType, QuizAnswer } from '@/app/data/quizData';
 
 interface QuizQuestionProps {
   question: QuizQuestionType;

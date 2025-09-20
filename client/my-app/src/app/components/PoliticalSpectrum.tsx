@@ -1,6 +1,6 @@
 "use client";
 
-import type { PoliticalSpectrum } from '@/data/quizData';
+import type { PoliticalSpectrum } from '@/app/data/quizData';
 
 interface PoliticalSpectrumProps {
   spectrum: PoliticalSpectrum;

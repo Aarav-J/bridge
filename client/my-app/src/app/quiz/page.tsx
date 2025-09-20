@@ -2,9 +2,9 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import QuizQuestion from '@/components/QuizQuestion';
-import PoliticalSpectrum from '@/components/PoliticalSpectrum';
-import { questions, QuizAnswer, PoliticalSpectrum as PoliticalSpectrumType, scoringWeights } from '@/data/quizData';
+import QuizQuestion from '@/app/components/QuizQuestion';
+import PoliticalSpectrum from '@/app/components/PoliticalSpectrum';
+import { questions, QuizAnswer, PoliticalSpectrum as PoliticalSpectrumType, scoringWeights } from '@/app/data/quizData';
 
 export default function QuizPage() {
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
