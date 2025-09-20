@@ -60,32 +60,58 @@ export default function QuizQuestion({
       </div>
 
       {/* Answers */}
-      <div className="space-y-3">
-        {question.answers.map((answer, index) => (
-          <button
-            key={index}
-            onClick={() => handleAnswerSelect(answer)}
-            className={`w-full p-4 text-left rounded-lg border-2 transition-all duration-200 ${
-              selectedAnswer === answer
-                ? 'border-blue-500 bg-blue-50 text-blue-900'
-                : 'border-gray-200 bg-white text-gray-700 hover:border-gray-300 hover:bg-gray-50'
-            }`}
-          >
-            <div className="flex items-center">
-              <div className={`w-4 h-4 rounded-full border-2 mr-3 ${
+      {question.type === 'scale' ? (
+        // Horizontal layout for scale questions (Democrat/Republican thermometer)
+        <div className="space-y-4">
+          <div className="flex flex-wrap gap-2 justify-center">
+            {question.answers.map((answer, index) => (
+              <button
+                key={index}
+                onClick={() => handleAnswerSelect(answer)}
+                className={`px-3 py-2 text-sm rounded-lg border-2 transition-all duration-200 ${
+                  selectedAnswer === answer
+                    ? 'border-blue-500 bg-blue-50 text-blue-900'
+                    : 'border-gray-200 bg-white text-gray-700 hover:border-gray-300 hover:bg-gray-50'
+                }`}
+              >
+                {answer}
+              </button>
+            ))}
+          </div>
+          <div className="flex justify-between text-xs text-gray-500 px-2">
+            <span>Cold/Negative</span>
+            <span>Warm/Positive</span>
+          </div>
+        </div>
+      ) : (
+        // Vertical layout for other question types
+        <div className="space-y-3">
+          {question.answers.map((answer, index) => (
+            <button
+              key={index}
+              onClick={() => handleAnswerSelect(answer)}
+              className={`w-full p-4 text-left rounded-lg border-2 transition-all duration-200 ${
                 selectedAnswer === answer
-                  ? 'border-blue-500 bg-blue-500'
-                  : 'border-gray-300'
-              }`}>
-                {selectedAnswer === answer && (
-                  <div className="w-2 h-2 bg-white rounded-full mx-auto mt-0.5"></div>
-                )}
+                  ? 'border-blue-500 bg-blue-50 text-blue-900'
+                  : 'border-gray-200 bg-white text-gray-700 hover:border-gray-300 hover:bg-gray-50'
+              }`}
+            >
+              <div className="flex items-center">
+                <div className={`w-4 h-4 rounded-full border-2 mr-3 ${
+                  selectedAnswer === answer
+                    ? 'border-blue-500 bg-blue-500'
+                    : 'border-gray-300'
+                }`}>
+                  {selectedAnswer === answer && (
+                    <div className="w-2 h-2 bg-white rounded-full mx-auto mt-0.5"></div>
+                  )}
+                </div>
+                <span className="text-lg">{answer}</span>
               </div>
-              <span className="text-lg">{answer}</span>
-            </div>
-          </button>
-        ))}
-      </div>
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* Category Badge */}
       <div className="mt-6 flex justify-center">
