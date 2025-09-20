@@ -13,7 +13,21 @@ export default function QuizPage() {
   const [spectrum, setSpectrum] = useState<PoliticalSpectrumType | null>(null);
   const router = useRouter();
 
-  const currentQuestion = questions[currentQuestionIndex];
+  // Filter questions based on previous answers (conditional logic)
+  const getAvailableQuestions = () => {
+    const availableQuestions = [...questions];
+    
+    // If user answered "smaller government" for question 1, skip question 2
+    const answer1 = answers.find(a => a.questionId === 1);
+    if (answer1 && answer1.answer === "A smaller government providing fewer services") {
+      return availableQuestions.filter(q => q.id !== 2);
+    }
+    
+    return availableQuestions;
+  };
+
+  const availableQuestions = getAvailableQuestions();
+  const currentQuestion = availableQuestions[currentQuestionIndex];
   const currentAnswer = answers.find(a => a.questionId === currentQuestion.id);
 
   const handleAnswer = (answer: QuizAnswer) => {
@@ -24,7 +38,7 @@ export default function QuizPage() {
   };
 
   const handleNext = () => {
-    if (currentQuestionIndex < questions.length - 1) {
+    if (currentQuestionIndex < availableQuestions.length - 1) {
       setCurrentQuestionIndex(prev => prev + 1);
     } else {
       // Quiz complete - calculate spectrum
@@ -128,7 +142,7 @@ export default function QuizPage() {
         onAnswer={handleAnswer}
         currentAnswer={currentAnswer?.answer}
         questionNumber={currentQuestionIndex + 1}
-        totalQuestions={questions.length}
+        totalQuestions={availableQuestions.length}
       />
       
       <div className="max-w-4xl mx-auto p-6">
@@ -146,7 +160,7 @@ export default function QuizPage() {
             disabled={!currentAnswer}
             className="px-6 py-2 bg-blue-600 text-white rounded-lg font-semibold disabled:bg-gray-400 disabled:cursor-not-allowed hover:bg-blue-700 transition-colors"
           >
-            {currentQuestionIndex === questions.length - 1 ? 'Complete Quiz' : 'Next'}
+            {currentQuestionIndex === availableQuestions.length - 1 ? 'Complete Quiz' : 'Next'}
           </button>
         </div>
       </div>
