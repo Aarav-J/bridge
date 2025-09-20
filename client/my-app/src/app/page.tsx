@@ -1,12 +1,18 @@
- "use client";
+"use client";
 
 import Link from "next/link";
 import { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
+import { io, Socket } from "socket.io-client";
 import UserProfile from "@/app/components/UserProfile";
 
 export default function HomePage() {
   const [userData, setUserData] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [socket, setSocket] = useState<Socket | null>(null);
+  const [isConnected, setIsConnected] = useState(false);
+  const [isStarting, setIsStarting] = useState(false);
+  const router = useRouter();
 
   useEffect(() => {
     const storedUserData = localStorage.getItem('userData');
@@ -15,6 +21,56 @@ export default function HomePage() {
     }
     setIsLoading(false);
   }, []);
+
+  useEffect(() => {
+    // Initialize Socket.IO connection
+    const newSocket = io("http://10.186.63.83:3000", { 
+      transports: ["websocket"] 
+    });
+
+    newSocket.on("connect", () => {
+      console.log("Connected to server");
+      setIsConnected(true);
+    });
+
+    newSocket.on("disconnect", () => {
+      console.log("Disconnected from server");
+      setIsConnected(false);
+    });
+
+    setSocket(newSocket);
+
+    return () => {
+      newSocket.close();
+    };
+  }, []);
+
+  const handleStartVideoCall = () => {
+    if (!socket || !isConnected) {
+      alert("Not connected to server. Please wait and try again.");
+      return;
+    }
+
+    setIsStarting(true);
+    console.log("Starting video call with user data:", userData);
+
+    // Send user info to server - this will be received by all connected clients
+    socket.emit("message", {
+      type: "userJoin",
+      userName: userData.fullName,
+      userAffiliation: userData.politicalLean
+    });
+
+    console.log("Sent user join message to server:", {
+      type: "userJoin",
+      userName: userData.fullName,
+      userAffiliation: userData.politicalLean
+    });
+
+    // Navigate directly to debate page without URL parameters
+    console.log("Navigating to: /debate");
+    router.push("/debate");
+  };
 
   return (
     <div className="min-h-screen bg-gray-900">
@@ -25,9 +81,17 @@ export default function HomePage() {
             <h1 className="text-2xl font-bold text-white">
               Bridge
             </h1>
-            <p className="text-gray-300 text-sm">
-              Video Debate Platform
-            </p>
+            <div className="flex items-center space-x-4">
+              <div className="flex items-center">
+                <div className={`w-2 h-2 rounded-full mr-2 ${isConnected ? 'bg-green-500' : 'bg-red-500'}`}></div>
+                <span className="text-gray-300 text-sm">
+                  {isConnected ? 'Connected' : 'Disconnected'}
+                </span>
+              </div>
+              <p className="text-gray-300 text-sm">
+                Video Debate Platform
+              </p>
+            </div>
           </div>
         </div>
       </div>
@@ -99,15 +163,21 @@ export default function HomePage() {
                   </p>
                 </div>
 
-                <Link 
-                  href="/debate"
-                  className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-4 px-8 rounded-lg text-lg transition-colors duration-200 flex items-center justify-center"
+                <button 
+                  onClick={handleStartVideoCall}
+                  className="w-full bg-green-600 hover:bg-green-700 disabled:bg-green-800 disabled:cursor-not-allowed text-white font-bold py-4 px-8 rounded-lg text-lg transition-colors duration-200 flex items-center justify-center"
+                  disabled={!isConnected || isStarting}
                 >
                   <svg className="w-6 h-6 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
                   </svg>
-                  Start Video Call
-                </Link>
+                  {isStarting 
+                    ? "Starting..." 
+                    : isConnected 
+                      ? "Start Video Call" 
+                      : "Connecting..."
+                  }
+                </button>
 
                 <p className="text-gray-500 text-xs mt-4">
                   Connect with someone for a structured political debate
