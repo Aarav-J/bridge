@@ -262,46 +262,84 @@ export default function VideoCall() {
   };
 
   return (
-    <div className="flex flex-col items-center p-5 max-w-6xl mx-auto">
-      <div className="flex gap-5 mb-5 flex-wrap justify-center">
-        <video 
-          ref={localVideoRef} 
-          autoPlay 
-          muted 
-          playsInline 
-          className="w-96 h-72 bg-black border-2 border-gray-700 rounded-lg object-cover"
-        />
-        <video 
-          ref={remoteVideoRef} 
-          autoPlay 
-          playsInline 
-          className="w-96 h-72 bg-black border-2 border-gray-700 rounded-lg object-cover"
-        />
+    <div className="min-h-screen bg-gray-50">
+      {/* Header */}
+      <div className="bg-white shadow-sm border-b">
+        <div className="max-w-6xl mx-auto px-6 py-4">
+          <h1 className="text-3xl font-bold text-gray-900">Political Debate Platform</h1>
+          <p className="text-gray-600 mt-2">Engage in structured, respectful political discourse</p>
+        </div>
       </div>
-      <div className="flex gap-3 flex-wrap justify-center">
-        <button 
-          ref={startButtonRef} 
-          onClick={startLocalStream}
-          className="px-6 py-3 text-base border-none rounded-md cursor-pointer bg-blue-600 text-white transition-colors duration-200 hover:bg-blue-700 disabled:bg-gray-500 disabled:cursor-not-allowed"
-        >
-          Start Call
-        </button>
-        <button 
-          ref={hangupButtonRef} 
-          disabled 
-          onClick={hangup}
-          className="px-6 py-3 text-base border-none rounded-md cursor-pointer bg-blue-600 text-white transition-colors duration-200 hover:bg-blue-700 disabled:bg-gray-500 disabled:cursor-not-allowed"
-        >
-          Hang Up
-        </button>
-        <button 
-          ref={muteAudButtonRef} 
-          disabled 
-          onClick={toggleMute}
-          className="px-6 py-3 text-base border-none rounded-md cursor-pointer bg-blue-600 text-white transition-colors duration-200 hover:bg-blue-700 disabled:bg-gray-500 disabled:cursor-not-allowed"
-        >
-          Mute Audio
-        </button>
+
+      {/* Main Content */}
+      <div className="max-w-6xl mx-auto px-6 py-8">
+        {/* Navigation Cards */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+          <div className="bg-white rounded-lg shadow-md p-6">
+            <h2 className="text-xl font-semibold mb-3">Take Political Quiz</h2>
+            <p className="text-gray-600 mb-4">
+              Discover your political spectrum and get matched with debate partners who have different perspectives.
+            </p>
+            <a 
+              href="/quiz"
+              className="inline-block px-6 py-3 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 transition-colors"
+            >
+              Start Quiz
+            </a>
+          </div>
+          
+          <div className="bg-white rounded-lg shadow-md p-6">
+            <h2 className="text-xl font-semibold mb-3">Join Video Debate</h2>
+            <p className="text-gray-600 mb-4">
+              Engage in live, structured debates with other users on important political topics.
+            </p>
+            <button 
+              ref={startButtonRef} 
+              onClick={startLocalStream}
+              className="px-6 py-3 bg-green-600 text-white rounded-lg font-semibold hover:bg-green-700 transition-colors disabled:bg-gray-500 disabled:cursor-not-allowed"
+            >
+              Start Debate
+            </button>
+          </div>
+        </div>
+
+        {/* Video Call Section */}
+        <div className="bg-white rounded-lg shadow-md p-6">
+          <h2 className="text-xl font-semibold mb-4">Video Call Controls</h2>
+          <div className="flex gap-5 mb-5 flex-wrap justify-center">
+            <video 
+              ref={localVideoRef} 
+              autoPlay 
+              muted 
+              playsInline 
+              className="w-96 h-72 bg-black border-2 border-gray-700 rounded-lg object-cover"
+            />
+            <video 
+              ref={remoteVideoRef} 
+              autoPlay 
+              playsInline 
+              className="w-96 h-72 bg-black border-2 border-gray-700 rounded-lg object-cover"
+            />
+          </div>
+          <div className="flex gap-3 flex-wrap justify-center">
+            <button 
+              ref={hangupButtonRef} 
+              disabled 
+              onClick={hangup}
+              className="px-6 py-3 text-base border-none rounded-md cursor-pointer bg-red-600 text-white transition-colors duration-200 hover:bg-red-700 disabled:bg-gray-500 disabled:cursor-not-allowed"
+            >
+              Hang Up
+            </button>
+            <button 
+              ref={muteAudButtonRef} 
+              disabled 
+              onClick={toggleMute}
+              className="px-6 py-3 text-base border-none rounded-md cursor-pointer bg-blue-600 text-white transition-colors duration-200 hover:bg-blue-700 disabled:bg-gray-500 disabled:cursor-not-allowed"
+            >
+              Mute Audio
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );
