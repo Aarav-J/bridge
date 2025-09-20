@@ -30,7 +30,7 @@ interface UserInfo {
   affiliation: string;
 }
 
-const socket: Socket = io("http://10.186.63.83:3000", { transports: ["websocket"] });
+const socket: Socket = io("http://localhost:3001", { transports: ["websocket"] });
 
 export default function DebatePage() {
   const [pc, setPc] = useState<RTCPeerConnection | null>(null);
@@ -77,73 +77,52 @@ export default function DebatePage() {
       console.log('Setting local user from localStorage:', userData);
       setLocalUser(userData);
       
-      // Announce this user's presence to the server
-      console.log('Sending userJoin message to server');
-      socket.emit("message", {
-        type: "userJoin",
-        userName: userData.name,
-        userAffiliation: userData.affiliation
+      // Join the debate room
+      console.log('Joining debate with user data:', userData);
+      socket.emit("join-debate", {
+        name: userData.name,
+        affiliation: userData.affiliation
       });
     } else {
       console.log('No user data found in localStorage');
     }
 
-    // Set up a global listener for user information
-    const handleSocketMessage = (message: any) => {
-      console.log("Received socket message:", message);
+    // Set up socket event listeners
+    socket.on("joined-debate", (data) => {
+      console.log("Successfully joined debate:", data);
+      setUserPosition(data.position);
       
-      if (message.type === "userJoin") {
-        console.log("User joined:", message);
-        
-        // Check if this is our own message (same socket) or from another user
-        if (message.socketId !== socket.id) {
-          // This is a different user joining, set them as remote user (only if we don't already have one)
-          if (!remoteUser) {
-            console.log('Setting remote user from message:', message);
-            setRemoteUser({
-              name: message.userName,
-              affiliation: message.userAffiliation
-            });
-          }
-        } else {
-          // This is our own join message, confirm local user
-          console.log('Confirming local user from our own message:', message);
-          setLocalUser({
-            name: message.userName,
-            affiliation: message.userAffiliation
+      // Set remote user if there's another participant
+      Object.keys(data.participants).forEach(pos => {
+        if (pos !== data.position) {
+          const participant = data.participants[pos];
+          setRemoteUser({
+            name: participant.name,
+            affiliation: participant.affiliation
           });
         }
-      }
-    };
+      });
+    });
 
-    // Set up listener for user information
-    socket.on("message", handleSocketMessage);
-
-    // Set up debate timer listeners (this should take priority for setting remote users)
-    socket.on('userJoined', (data: { user: UserInfo; position: string }) => {
-      console.log('User joined via userJoined event:', data);
-      console.log('Current local user:', localUser);
-      console.log('Current remote user:', remoteUser);
-      
-      // Always set this as the remote user
+    socket.on("user-joined", (data) => {
+      console.log("Another user joined:", data);
       setRemoteUser(data.user);
-      
-      // Set our position - this is telling us about THEIR position, so we need the opposite
-      const myPosition = data.position === 'user1' ? 'user2' : 'user1';
-      console.log(`They are ${data.position}, so I am ${myPosition}`);
-      setUserPosition(myPosition);
     });
 
-    socket.on('yourPosition', (data: { position: string; totalParticipants: number }) => {
-      console.log('Received my position:', data);
-      setUserPosition(data.position);
+    socket.on("user-left", (data) => {
+      console.log("User left:", data);
+      setRemoteUser(null);
+      setDebateActive(false);
     });
 
-    socket.on('phaseStart', (data: { phase: number; speaker: string; description: string; duration: number }) => {
-      console.log('Phase started:', data);
-      console.log('My user position:', userPosition);
-      console.log('Current speaker should be:', data.speaker);
-      
+    socket.on("room-full", () => {
+      console.log("Room is full");
+      alert("Debate room is full. Only 2 participants allowed at a time.");
+      router.push('/');
+    });
+
+    socket.on("phase-start", (data) => {
+      console.log("Phase started:", data);
       setDebateActive(true);
       setCurrentPhase(data.phase);
       setCurrentSpeaker(data.speaker);
@@ -151,35 +130,62 @@ export default function DebatePage() {
       setTimeRemaining(data.duration);
     });
 
-    socket.on('timeUpdate', (data: { timeRemaining: number }) => {
+    socket.on("time-update", (data) => {
       setTimeRemaining(data.timeRemaining);
     });
 
-    socket.on('debateFinished', () => {
-      console.log('Debate finished');
+    socket.on("debate-finished", () => {
+      console.log("Debate finished");
       setDebateActive(false);
       setCurrentPhase(0);
       setTimeRemaining(0);
       setCurrentSpeaker(null);
       setPhaseDescription("");
       setCanSpeak(true);
+    });
+
+    // Handle WebRTC signaling
+    socket.on("webrtc-signal", (data) => {
+      console.log("Received WebRTC signal:", data.type);
+      if (!localStream) {
+        console.log("Local stream not ready yet");
+        return;
+      }
       
-      // Unmute audio when debate ends
-      if (localStream) {
-        const audioTracks = localStream.getAudioTracks();
-        audioTracks.forEach(track => {
-          track.enabled = true;
-        });
+      switch (data.type) {
+        case "offer":
+          handleOffer(data);
+          break;
+        case "answer":
+          handleAnswer(data);
+          break;
+        case "candidate":
+          handleCandidate(data);
+          break;
+        case "ready":
+          if (remoteUser && localStream) {
+            console.log("Both users ready, initiating call");
+            makeCall();
+          }
+          break;
+        case "bye":
+          if (pc) {
+            hangup();
+          }
+          break;
       }
     });
 
+    // Cleanup function
     return () => {
-      socket.off("message", handleSocketMessage);
-      socket.off('userJoined');
-      socket.off('yourPosition');
-      socket.off('phaseStart');
-      socket.off('timeUpdate');
-      socket.off('debateFinished');
+      socket.off("joined-debate");
+      socket.off("user-joined");
+      socket.off("user-left");
+      socket.off("room-full");
+      socket.off("phase-start");
+      socket.off("time-update");
+      socket.off("debate-finished");
+      socket.off("webrtc-signal");
       
       // Cleanup audio analysis
       if (animationFrameRef.current) {
@@ -322,74 +328,17 @@ export default function DebatePage() {
     };
   }, [localAnalyserRef.current, remoteAnalyserRef.current]);
 
-  // Send ready message when both local stream and remote user are available
+  // Send ready signal when both local stream and remote user are available
   useEffect(() => {
     if (localStream && remoteUser && !pc) {
-      console.log("Both users detected, sending ready signal");
-      // Add a small delay to ensure everything is set up
+      console.log("Both users detected, sending WebRTC ready signal");
       setTimeout(() => {
-        socket.emit("message", { 
-          type: "ready", 
-          userName: localUser.name, 
-          userAffiliation: localUser.affiliation 
+        socket.emit("webrtc-signal", { 
+          type: "ready"
         });
       }, 1000);
     }
-  }, [localStream, remoteUser, pc, localUser, socket]);
-
-  useEffect(() => {
-    socket.on("message", (e: SocketMessage) => {
-      if (!localStream) {
-        console.log("not ready yet");
-        return;
-      }
-      switch (e.type) {
-        case "offer":
-          handleOffer(e);
-          break;
-        case "answer":
-          handleAnswer(e);
-          break;
-        case "candidate":
-          handleCandidate(e);
-          break;
-        case "ready":
-          console.log("Received ready message from remote user", e);
-          if (pc) {
-            console.log("peer connection already exists");
-            return;
-          }
-          // Only make call if we have a remote user and local stream
-          if (remoteUser && localStream) {
-            console.log("Both users ready, initiating call");
-            makeCall();
-          } else {
-            console.log("Not ready yet - remoteUser:", !!remoteUser, "localStream:", !!localStream);
-          }
-          break;
-        case "userInfo":
-          if (e.userName && e.userAffiliation) {
-            setRemoteUser({
-              name: e.userName,
-              affiliation: e.userAffiliation
-            });
-          }
-          break;
-        case "bye":
-          if (pc) {
-            hangup();
-          }
-          break;
-        default:
-          console.log("unknown message type:", e.type);
-          break;
-      }
-    });
-
-    return () => {
-      socket.off("message");
-    };
-  }, [localStream, pc, localUser]);
+  }, [localStream, remoteUser, pc]);
 
   const startLocalStream = async (): Promise<void> => {
     try {
@@ -471,14 +420,14 @@ export default function DebatePage() {
       setPc(newPc);
       
       newPc.onicecandidate = (e: RTCPeerConnectionIceEvent) => {
-        const message: SocketMessage = {
+        const data = {
           type: "candidate",
           candidate: e.candidate?.candidate,
           sdpMid: e.candidate?.sdpMid || null,
           sdpMLineIndex: e.candidate?.sdpMLineIndex || null,
         };
         console.log("Sending ICE candidate");
-        socket.emit("message", message);
+        socket.emit("webrtc-signal", data);
       };
       
       newPc.ontrack = (e: RTCTrackEvent) => {
@@ -498,7 +447,7 @@ export default function DebatePage() {
         
         console.log("Creating and sending offer");
         const offer = await newPc.createOffer();
-        socket.emit("message", { type: "offer", sdp: offer.sdp });
+        socket.emit("webrtc-signal", { type: "offer", sdp: offer.sdp });
         await newPc.setLocalDescription(offer);
       }
     } catch (e) {
@@ -517,14 +466,14 @@ export default function DebatePage() {
       setPc(newPc);
       
       newPc.onicecandidate = (e: RTCPeerConnectionIceEvent) => {
-        const message: SocketMessage = {
+        const data = {
           type: "candidate",
           candidate: e.candidate?.candidate,
           sdpMid: e.candidate?.sdpMid || null,
           sdpMLineIndex: e.candidate?.sdpMLineIndex || null,
         };
         console.log("Sending ICE candidate from answer side");
-        socket.emit("message", message);
+        socket.emit("webrtc-signal", data);
       };
       
       newPc.ontrack = (e: RTCTrackEvent) => {
@@ -546,7 +495,7 @@ export default function DebatePage() {
       console.log("Setting remote description and creating answer");
       await newPc.setRemoteDescription({ type: "offer", sdp: offer.sdp || "" });
       const answer = await newPc.createAnswer();
-      socket.emit("message", { type: "answer", sdp: answer.sdp });
+      socket.emit("webrtc-signal", { type: "answer", sdp: answer.sdp });
       await newPc.setLocalDescription(answer);
     } catch (e) {
       console.error("Error in handleOffer:", e);
@@ -621,7 +570,7 @@ export default function DebatePage() {
     }
     
     // Signal hangup to other peer
-    socket.emit("message", { type: "bye" });
+    socket.emit("webrtc-signal", { type: "bye" });
     router.push('/'); // Redirect to landing page after hangup
   };
 
@@ -687,45 +636,58 @@ export default function DebatePage() {
       
       {/* Right panel - 50% of horizontal space for debate timer */}
       <div className="w-1/2 h-full bg-gray-800 flex flex-col">
-        {/* Timer Section */}
-        {debateActive && (
-          <div className="bg-gray-900 p-6 m-4 rounded-lg">
-            <div className="text-center text-white">
-              <h2 className="text-2xl font-bold mb-4">Debate Timer</h2>
-              
-              {/* Phase Information */}
-              <div className="mb-4">
-                <div className="text-lg text-blue-300 mb-2">
-                  Phase {currentPhase + 1} of 6
-                </div>
-                <div className="text-gray-300">
-                  {phaseDescription}
-                </div>
+        
+        {/* Topic and Facts Section */}
+        <div className="bg-gray-900 p-4 m-4 rounded-lg">
+          <div className="text-white">
+            <h2 className="text-xl font-bold mb-3 text-center">Debate Topic</h2>
+            <div className="bg-blue-900 bg-opacity-50 p-3 rounded-lg mb-4">
+              <p className="text-blue-100 text-center text-sm leading-relaxed">
+                "Should artificial intelligence be regulated by government agencies?"
+              </p>
+            </div>
+            
+            <h3 className="text-md font-semibold mb-2 text-center">Key Facts</h3>
+            <div className="bg-gray-800 p-3 rounded-lg space-y-2">
+              <div className="text-xs text-gray-300">
+                • AI market projected to reach $1.8 trillion by 2030
               </div>
-              
-              {/* Time Remaining */}
-              <div className="mb-4">
-                <div className="text-4xl font-mono text-green-400 mb-2">
+              <div className="text-xs text-gray-300">
+                • 85% of businesses plan to implement AI by 2025
+              </div>
+              <div className="text-xs text-gray-300">
+                • Current AI regulations vary significantly between countries
+              </div>
+              <div className="text-xs text-gray-300">
+                • 67% of consumers express concerns about AI privacy
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Compact Timer Section */}
+        {debateActive && (
+          <div className="bg-gray-900 p-3 m-4 rounded-lg">
+            <div className="text-center text-white">
+              <div className="flex justify-between items-center mb-2">
+                <div className="text-sm text-blue-300">
+                  Phase {currentPhase + 1}/6
+                </div>
+                <div className="text-lg font-mono text-green-400">
                   {Math.floor(timeRemaining / 60)}:{(timeRemaining % 60).toString().padStart(2, '0')}
                 </div>
-                <div className="text-sm text-gray-400">
-                  Time Remaining
-                </div>
               </div>
               
-              {/* Current Speaker */}
-              <div className="mb-4">
-                <div className={`text-lg font-semibold ${canSpeak ? 'text-green-400' : 'text-red-400'}`}>
-                  {canSpeak ? 'YOUR TURN TO SPEAK' : 'LISTENING'}
-                </div>
-                <div className="text-sm text-gray-400">
-                  Current Speaker: {currentSpeaker === userPosition ? 'You' : 'Opponent'}
-                </div>
+              <div className="text-xs text-gray-300 mb-2">
+                {phaseDescription}
               </div>
               
-              {/* Audio Status */}
-              <div className={`text-sm p-2 rounded ${canSpeak ? 'bg-green-800 text-green-200' : 'bg-red-800 text-red-200'}`}>
-                {canSpeak ? '🎤 Microphone Active' : '🔇 Microphone Muted'}
+              <div className={`text-sm font-semibold mb-1 ${canSpeak ? 'text-green-400' : 'text-red-400'}`}>
+                {canSpeak ? '🎤 YOUR TURN' : '🔇 LISTENING'}
+              </div>
+              
+              <div className={`text-xs p-2 rounded ${canSpeak ? 'bg-green-800 text-green-200' : 'bg-red-800 text-red-200'}`}>
+                {currentSpeaker === userPosition ? 'You are speaking' : `${remoteUser?.name || 'Opponent'} is speaking`}
               </div>
             </div>
           </div>
@@ -770,7 +732,7 @@ export default function DebatePage() {
                   The debate will begin shortly...
                 </div>
                 <button
-                  onClick={() => socket.emit('startDebate')}
+                  onClick={() => socket.emit('start-debate')}
                   className="bg-green-600 hover:bg-green-700 text-white font-medium py-2 px-6 rounded-lg transition-colors duration-200"
                 >
                   Start Debate

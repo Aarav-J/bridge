@@ -12,6 +12,8 @@ export default function HomePage() {
   const [socket, setSocket] = useState<Socket | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
+  const [activeUsers, setActiveUsers] = useState<any[]>([]);
+  const [debateStatus, setDebateStatus] = useState({ participants: 0, active: false });
   const router = useRouter();
 
   useEffect(() => {
@@ -31,11 +33,23 @@ export default function HomePage() {
     newSocket.on("connect", () => {
       console.log("Connected to server");
       setIsConnected(true);
+      // Request current user list
+      fetchActiveUsers();
     });
 
     newSocket.on("disconnect", () => {
       console.log("Disconnected from server");
       setIsConnected(false);
+    });
+
+    // Listen for user updates
+    newSocket.on("users-update", (data) => {
+      console.log("Users update received:", data);
+      setActiveUsers(data.connectedUsers);
+      setDebateStatus({
+        participants: data.debateParticipants,
+        active: data.debateActive || false
+      });
     });
 
     setSocket(newSocket);
@@ -44,6 +58,20 @@ export default function HomePage() {
       newSocket.close();
     };
   }, []);
+
+  const fetchActiveUsers = async () => {
+    try {
+      const response = await fetch("http://10.186.63.83:3000/api/active-users");
+      const data = await response.json();
+      setActiveUsers(data.users);
+      setDebateStatus({
+        participants: data.debateParticipants,
+        active: data.debateActive
+      });
+    } catch (error) {
+      console.error("Failed to fetch active users:", error);
+    }
+  };
 
   const handleStartVideoCall = () => {
     if (!socket || !isConnected) {
@@ -212,6 +240,76 @@ export default function HomePage() {
                 </p>
               </div>
             ) : null}
+          </div>
+        </div>
+
+        {/* Active Users Section */}
+        <div className="mt-12 max-w-6xl mx-auto">
+          <div className="bg-gray-800 rounded-lg p-6 shadow-xl">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-xl font-semibold text-white flex items-center">
+                <div className={`w-3 h-3 rounded-full mr-3 ${isConnected ? 'bg-green-500' : 'bg-red-500'}`}></div>
+                Active Users
+              </h3>
+              <div className="text-sm text-gray-400">
+                {debateStatus.active ? (
+                  <span className="bg-green-900 text-green-300 px-2 py-1 rounded">
+                    Debate in Progress ({debateStatus.participants}/2)
+                  </span>
+                ) : debateStatus.participants > 0 ? (
+                  <span className="bg-yellow-900 text-yellow-300 px-2 py-1 rounded">
+                    Waiting for Participants ({debateStatus.participants}/2)
+                  </span>
+                ) : (
+                  <span className="bg-gray-700 text-gray-300 px-2 py-1 rounded">
+                    No Active Debate
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {activeUsers.length > 0 ? (
+                activeUsers.map((user, index) => (
+                  <div key={index} className="bg-gray-700 rounded-lg p-4 flex items-center space-x-3">
+                    <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full flex items-center justify-center">
+                      <span className="text-white font-semibold text-sm">
+                        {user.name.charAt(0).toUpperCase()}
+                      </span>
+                    </div>
+                    <div className="flex-1">
+                      <div className="text-white font-medium">{user.name}</div>
+                      <div className="text-gray-400 text-xs">{user.affiliation}</div>
+                      <div className="text-gray-500 text-xs">
+                        Connected {new Date(user.connectedAt).toLocaleTimeString()}
+                      </div>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="col-span-full text-center text-gray-400 py-8">
+                  <svg className="w-12 h-12 mx-auto mb-4 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+                  </svg>
+                  <p>No users currently online</p>
+                  <p className="text-xs mt-1">Be the first to start a debate!</p>
+                </div>
+              )}
+            </div>
+
+            {isConnected && (
+              <div className="mt-4 pt-4 border-t border-gray-700">
+                <div className="flex items-center justify-between text-sm text-gray-400">
+                  <span>Total Online: {activeUsers.length}</span>
+                  <button 
+                    onClick={fetchActiveUsers}
+                    className="text-blue-400 hover:text-blue-300 transition-colors"
+                  >
+                    Refresh
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>
