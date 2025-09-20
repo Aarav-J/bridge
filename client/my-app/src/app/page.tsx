@@ -2,6 +2,8 @@
 
 import { io, Socket } from "socket.io-client";
 import { useRef, useEffect, useState } from "react";
+import Video from "./components/Video";
+import ControlPanel from "./components/ControlPanel";
 
 const configuration: RTCConfiguration = {
   iceServers: [
@@ -25,6 +27,7 @@ const socket: Socket = io("http://10.186.63.83:3000", { transports: ["websocket"
 export default function VideoCall() {
   const [pc, setPc] = useState<RTCPeerConnection | null>(null);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
+  const [isCallActive, setIsCallActive] = useState(false);
   
   const startButtonRef = useRef<HTMLButtonElement>(null);
   const hangupButtonRef = useRef<HTMLButtonElement>(null);
@@ -79,6 +82,7 @@ export default function VideoCall() {
       });
       
       setLocalStream(stream);
+      setIsCallActive(true);
       
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
@@ -237,6 +241,8 @@ export default function VideoCall() {
       setLocalStream(null);
     }
     
+    setIsCallActive(false);
+    
     // Clear video elements
     if (localVideoRef.current) {
       localVideoRef.current.srcObject = null;
@@ -262,47 +268,46 @@ export default function VideoCall() {
   };
 
   return (
-    <div className="flex flex-col items-center p-5 max-w-6xl mx-auto">
-      <div className="flex gap-5 mb-5 flex-wrap justify-center">
-        <video 
-          ref={localVideoRef} 
-          autoPlay 
-          muted 
-          playsInline 
-          className="w-96 h-72 bg-black border-2 border-gray-700 rounded-lg object-cover"
-        />
-        <video 
-          ref={remoteVideoRef} 
-          autoPlay 
-          playsInline 
-          className="w-96 h-72 bg-black border-2 border-gray-700 rounded-lg object-cover"
-        />
+    <div className="h-screen bg-gray-900 relative flex overflow-hidden">
+      {/* Video panel - 50% of horizontal space */}
+      <div className="w-1/2 h-full flex flex-col">
+        {/* Top video - John/Democrat - 50% of vertical space */}
+        <div className="h-1/2 relative overflow-hidden">
+          <Video 
+            ref={localVideoRef}
+            name="John"
+            label="Democrat"
+            muted={true}
+          />
+        </div>
+        
+        {/* Bottom video - Max/Conservative - 50% of vertical space */}
+        <div className="h-1/2 relative overflow-hidden">
+          <Video 
+            ref={remoteVideoRef}
+            name="Max"
+            label="Conservative"
+          />
+        </div>
       </div>
-      <div className="flex gap-3 flex-wrap justify-center">
-        <button 
-          ref={startButtonRef} 
-          onClick={startLocalStream}
-          className="px-6 py-3 text-base border-none rounded-md cursor-pointer bg-blue-600 text-white transition-colors duration-200 hover:bg-blue-700 disabled:bg-gray-500 disabled:cursor-not-allowed"
-        >
-          Start Call
-        </button>
-        <button 
-          ref={hangupButtonRef} 
-          disabled 
-          onClick={hangup}
-          className="px-6 py-3 text-base border-none rounded-md cursor-pointer bg-blue-600 text-white transition-colors duration-200 hover:bg-blue-700 disabled:bg-gray-500 disabled:cursor-not-allowed"
-        >
-          Hang Up
-        </button>
-        <button 
-          ref={muteAudButtonRef} 
-          disabled 
-          onClick={toggleMute}
-          className="px-6 py-3 text-base border-none rounded-md cursor-pointer bg-blue-600 text-white transition-colors duration-200 hover:bg-blue-700 disabled:bg-gray-500 disabled:cursor-not-allowed"
-        >
-          Mute Audio
-        </button>
+      
+      {/* Right panel - 50% of horizontal space for future content */}
+      <div className="w-1/2 h-full bg-gray-800 flex items-center justify-center">
+        <div className="text-white text-xl">
+          Additional Content Area
+        </div>
       </div>
+      
+      {/* Control panel overlay */}
+      <ControlPanel
+        onStartCall={startLocalStream}
+        onHangup={hangup}
+        onToggleMute={toggleMute}
+        isCallActive={isCallActive}
+        startButtonRef={startButtonRef}
+        hangupButtonRef={hangupButtonRef}
+        muteButtonRef={muteAudButtonRef}
+      />
     </div>
   );
 }
