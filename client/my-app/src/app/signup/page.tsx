@@ -1,0 +1,242 @@
+"use client";
+
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
+
+interface SignupFormData {
+  fullName: string;
+  username: string;
+  email: string;
+  age: string;
+}
+
+export default function SignupPage() {
+  const [formData, setFormData] = useState<SignupFormData>({
+    fullName: "",
+    username: "",
+    email: "",
+    age: ""
+  });
+  const [errors, setErrors] = useState<Partial<SignupFormData>>({});
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const router = useRouter();
+
+  const validateForm = (): boolean => {
+    const newErrors: Partial<SignupFormData> = {};
+
+    if (!formData.fullName.trim()) {
+      newErrors.fullName = "Full name is required";
+    }
+
+    if (!formData.username.trim()) {
+      newErrors.username = "Username is required";
+    } else if (formData.username.length < 3) {
+      newErrors.username = "Username must be at least 3 characters";
+    }
+
+    if (!formData.email.trim()) {
+      newErrors.email = "Email is required";
+    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email)) {
+      newErrors.email = "Please enter a valid email address";
+    }
+
+    if (!formData.age.trim()) {
+      newErrors.age = "Age is required";
+    } else {
+      const age = parseInt(formData.age);
+      if (isNaN(age) || age < 13 || age > 120) {
+        newErrors.age = "Please enter a valid age (13-120)";
+      }
+    }
+
+    setErrors(newErrors);
+    return Object.keys(newErrors).length === 0;
+  };
+
+  const handleInputChange = (field: keyof SignupFormData, value: string) => {
+    setFormData(prev => ({ ...prev, [field]: value }));
+    // Clear error when user starts typing
+    if (errors[field]) {
+      setErrors(prev => ({ ...prev, [field]: undefined }));
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    if (!validateForm()) {
+      return;
+    }
+
+    setIsSubmitting(true);
+
+    // Simulate API call delay
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
+    // Store user data in localStorage for demo purposes
+    const userData = {
+      ...formData,
+      age: parseInt(formData.age),
+      quizCompleted: false,
+      signupDate: new Date().toISOString()
+    };
+    localStorage.setItem('userData', JSON.stringify(userData));
+
+    // Redirect to quiz
+    router.push('/quiz');
+  };
+
+  return (
+    <div className="min-h-screen bg-gray-900">
+      {/* Header */}
+      <div className="bg-gray-800 border-b border-gray-700">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex items-center justify-between h-16">
+            <Link href="/" className="text-2xl font-bold text-white hover:text-gray-300">
+              Bridge
+            </Link>
+            <Link 
+              href="/"
+              className="text-gray-300 hover:text-white transition-colors"
+            >
+              ← Back to Home
+            </Link>
+          </div>
+        </div>
+      </div>
+
+      {/* Main Content */}
+      <div className="max-w-md mx-auto px-4 sm:px-6 lg:px-8 py-12">
+        <div className="bg-gray-800 rounded-lg shadow-xl p-8">
+          <div className="text-center mb-8">
+            <div className="w-16 h-16 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full mx-auto flex items-center justify-center mb-4">
+              <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
+              </svg>
+            </div>
+            <h1 className="text-2xl font-bold text-white mb-2">Create Your Account</h1>
+            <p className="text-gray-400 text-sm">
+              Join the political debate platform and find your voice
+            </p>
+          </div>
+
+          <form onSubmit={handleSubmit} className="space-y-6">
+            {/* Full Name */}
+            <div>
+              <label htmlFor="fullName" className="block text-sm font-medium text-gray-300 mb-2">
+                Full Name
+              </label>
+              <input
+                type="text"
+                id="fullName"
+                value={formData.fullName}
+                onChange={(e) => handleInputChange('fullName', e.target.value)}
+                className={`w-full px-4 py-3 bg-gray-700 border rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
+                  errors.fullName ? 'border-red-500' : 'border-gray-600'
+                }`}
+                placeholder="Enter your full name"
+              />
+              {errors.fullName && (
+                <p className="mt-1 text-sm text-red-400">{errors.fullName}</p>
+              )}
+            </div>
+
+            {/* Username */}
+            <div>
+              <label htmlFor="username" className="block text-sm font-medium text-gray-300 mb-2">
+                Username
+              </label>
+              <input
+                type="text"
+                id="username"
+                value={formData.username}
+                onChange={(e) => handleInputChange('username', e.target.value)}
+                className={`w-full px-4 py-3 bg-gray-700 border rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
+                  errors.username ? 'border-red-500' : 'border-gray-600'
+                }`}
+                placeholder="Choose a username"
+              />
+              {errors.username && (
+                <p className="mt-1 text-sm text-red-400">{errors.username}</p>
+              )}
+            </div>
+
+            {/* Email */}
+            <div>
+              <label htmlFor="email" className="block text-sm font-medium text-gray-300 mb-2">
+                Email Address
+              </label>
+              <input
+                type="email"
+                id="email"
+                value={formData.email}
+                onChange={(e) => handleInputChange('email', e.target.value)}
+                className={`w-full px-4 py-3 bg-gray-700 border rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
+                  errors.email ? 'border-red-500' : 'border-gray-600'
+                }`}
+                placeholder="Enter your email"
+              />
+              {errors.email && (
+                <p className="mt-1 text-sm text-red-400">{errors.email}</p>
+              )}
+            </div>
+
+            {/* Age */}
+            <div>
+              <label htmlFor="age" className="block text-sm font-medium text-gray-300 mb-2">
+                Age
+              </label>
+              <input
+                type="number"
+                id="age"
+                value={formData.age}
+                onChange={(e) => handleInputChange('age', e.target.value)}
+                className={`w-full px-4 py-3 bg-gray-700 border rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
+                  errors.age ? 'border-red-500' : 'border-gray-600'
+                }`}
+                placeholder="Enter your age"
+                min="13"
+                max="120"
+              />
+              {errors.age && (
+                <p className="mt-1 text-sm text-red-400">{errors.age}</p>
+              )}
+            </div>
+
+            {/* Submit Button */}
+            <button
+              type="submit"
+              disabled={isSubmitting}
+              className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 text-white font-bold py-3 px-6 rounded-lg transition-colors duration-200 flex items-center justify-center"
+            >
+              {isSubmitting ? (
+                <>
+                  <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mr-2"></div>
+                  Creating Account...
+                </>
+              ) : (
+                <>
+                  <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                  </svg>
+                  Create Account & Take Quiz
+                </>
+              )}
+            </button>
+          </form>
+
+          {/* Login Link */}
+          <div className="mt-6 text-center">
+            <p className="text-gray-400 text-sm">
+              Already have an account?{" "}
+              <Link href="/login" className="text-blue-400 hover:text-blue-300 transition-colors">
+                Sign in here
+              </Link>
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

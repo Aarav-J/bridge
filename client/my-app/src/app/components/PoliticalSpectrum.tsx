@@ -30,11 +30,11 @@ export default function PoliticalSpectrum({ spectrum }: PoliticalSpectrumProps) 
 
   return (
     <div className="max-w-4xl mx-auto p-6">
-      <h2 className="text-3xl font-bold text-center mb-8">Your Political Spectrum</h2>
+      <h2 className="text-3xl font-bold text-center mb-8 text-gray-900">Your Political Spectrum</h2>
       
       {/* Overall Spectrum */}
       <div className="mb-8">
-        <h3 className="text-xl font-semibold mb-4 text-center">Overall Political Position</h3>
+        <h3 className="text-xl font-semibold mb-4 text-center text-gray-800">Overall Political Position</h3>
         <div className="relative">
           <div className="w-full h-8 bg-gradient-to-r from-blue-500 via-gray-400 to-red-500 rounded-lg relative">
             <div 
@@ -42,7 +42,7 @@ export default function PoliticalSpectrum({ spectrum }: PoliticalSpectrumProps) 
               style={{ left: `${getSpectrumPosition(spectrum.overall)}%` }}
             ></div>
           </div>
-          <div className="flex justify-between mt-2 text-sm text-gray-600">
+          <div className="flex justify-between mt-2 text-sm text-gray-800">
             <span>Very Liberal</span>
             <span>Moderate</span>
             <span>Very Conservative</span>
@@ -59,7 +59,7 @@ export default function PoliticalSpectrum({ spectrum }: PoliticalSpectrumProps) 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {Object.entries(spectrum).filter(([key]) => key !== 'overall').map(([category, value]) => (
           <div key={category} className="bg-gray-50 p-4 rounded-lg">
-            <h4 className="font-semibold mb-3 capitalize">
+            <h4 className="font-semibold mb-3 capitalize text-gray-800">
               {category.replace(/([A-Z])/g, ' $1').trim()}
             </h4>
             <div className="relative">
@@ -69,12 +69,12 @@ export default function PoliticalSpectrum({ spectrum }: PoliticalSpectrumProps) 
                   style={{ left: `${getSpectrumPosition(value)}%` }}
                 ></div>
               </div>
-              <div className="flex justify-between mt-1 text-xs text-gray-600">
+              <div className="flex justify-between mt-1 text-xs text-gray-800">
                 <span>Liberal</span>
                 <span>Conservative</span>
               </div>
               <div className="text-center mt-1">
-                <span className="text-sm font-medium">
+                <span className="text-sm font-medium text-gray-900">
                   {getSpectrumLabel(value)} ({value.toFixed(0)})
                 </span>
               </div>
@@ -85,8 +85,8 @@ export default function PoliticalSpectrum({ spectrum }: PoliticalSpectrumProps) 
 
       {/* Interpretation */}
       <div className="mt-8 p-6 bg-blue-50 rounded-lg">
-        <h3 className="text-lg font-semibold mb-3">What This Means</h3>
-        <p className="text-gray-700 leading-relaxed">
+        <h3 className="text-lg font-semibold mb-3 text-gray-800">What This Means</h3>
+        <p className="text-gray-800 leading-relaxed">
           Your political spectrum is calculated based on your responses to questions covering 
           economic policy, social issues, foreign policy, governance, and cultural values. 
           The scale ranges from -100 (very liberal) to +100 (very conservative), with 0 

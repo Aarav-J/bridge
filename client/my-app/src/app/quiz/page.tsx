@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import QuizQuestion from '@/app/components/QuizQuestion';
 import PoliticalSpectrum from '@/app/components/PoliticalSpectrum';
 import { questions, QuizAnswer, PoliticalSpectrum as PoliticalSpectrumType, scoringWeights } from '@/app/data/quizData';
@@ -11,7 +12,31 @@ export default function QuizPage() {
   const [answers, setAnswers] = useState<QuizAnswer[]>([]);
   const [isComplete, setIsComplete] = useState(false);
   const [spectrum, setSpectrum] = useState<PoliticalSpectrumType | null>(null);
+  const [userData, setUserData] = useState<any>(null);
+  const [isLoading, setIsLoading] = useState(true);
   const router = useRouter();
+
+  // Check if user is signed up and hasn't completed quiz
+  useEffect(() => {
+    const storedUserData = localStorage.getItem('userData');
+    if (!storedUserData) {
+      // No user data, redirect to signup
+      router.push('/signup');
+      return;
+    }
+
+    const parsedUserData = JSON.parse(storedUserData);
+    setUserData(parsedUserData);
+
+    // Check if quiz is already completed
+    if (parsedUserData.quizCompleted) {
+      // Quiz already completed, redirect to home
+      router.push('/');
+      return;
+    }
+
+    setIsLoading(false);
+  }, [router]);
 
   // Filter questions based on previous answers (conditional logic)
   const getAvailableQuestions = () => {
@@ -99,6 +124,24 @@ export default function QuizPage() {
     return scores.reduce((sum, score) => sum + score, 0) / scores.length;
   };
 
+  const handleFinish = () => {
+    // Mark quiz as completed in user data
+    const updatedUserData = {
+      ...userData,
+      quizCompleted: true,
+      quizResults: {
+        answers,
+        spectrum,
+        completedAt: new Date().toISOString()
+      }
+    };
+    
+    localStorage.setItem('userData', JSON.stringify(updatedUserData));
+    
+    // Redirect to home page
+    router.push('/');
+  };
+
   const handleStartDebate = () => {
     // TODO: Implement debate matching logic
     router.push('/debate');
@@ -116,20 +159,30 @@ export default function QuizPage() {
       <div className="min-h-screen bg-gray-50 py-8">
         <PoliticalSpectrum spectrum={spectrum} />
         <div className="max-w-4xl mx-auto p-6 mt-8">
-          <div className="flex gap-4 justify-center">
+          <div className="text-center">
+            <h2 className="text-2xl font-bold text-gray-900 mb-4">Quiz Complete!</h2>
+            <p className="text-gray-600 mb-6">
+              Your political spectrum has been calculated. You can now participate in debates.
+            </p>
             <button
-              onClick={handleStartDebate}
-              className="px-8 py-3 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 transition-colors"
+              onClick={handleFinish}
+              className="px-8 py-3 bg-green-600 text-white rounded-lg font-semibold hover:bg-green-700 transition-colors"
             >
-              Find Debate Partner
-            </button>
-            <button
-              onClick={handleRetakeQuiz}
-              className="px-8 py-3 bg-gray-600 text-white rounded-lg font-semibold hover:bg-gray-700 transition-colors"
-            >
-              Retake Quiz
+              Continue to Platform
             </button>
           </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Show loading state while checking user data
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-gray-900 flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto mb-4"></div>
+          <p className="text-white">Loading...</p>
         </div>
       </div>
     );
