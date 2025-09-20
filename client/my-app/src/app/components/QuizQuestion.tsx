@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { QuizQuestion as QuizQuestionType, QuizAnswer } from '@/app/data/quizData';
 
 interface QuizQuestionProps {
@@ -19,6 +19,11 @@ export default function QuizQuestion({
   totalQuestions 
 }: QuizQuestionProps) {
   const [selectedAnswer, setSelectedAnswer] = useState<string>(currentAnswer || '');
+
+  // Update selectedAnswer when currentAnswer prop changes (when moving to different questions)
+  useEffect(() => {
+    setSelectedAnswer(currentAnswer || '');
+  }, [currentAnswer, question.id]);
 
   const handleAnswerSelect = (answer: string) => {
     setSelectedAnswer(answer);
