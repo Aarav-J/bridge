@@ -20,7 +20,7 @@ interface SocketMessage {
   sdpMLineIndex?: number | null;
 }
 
-const socket: Socket = io("http://localhost:3000", { transports: ["websocket"] });
+const socket: Socket = io("http://10.186.63.83:3000", { transports: ["websocket"] });
 
 export default function VideoCall() {
   const [pc, setPc] = useState<RTCPeerConnection | null>(null);

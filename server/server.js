@@ -6,11 +6,22 @@ const app = express();
 
 app.use(cors());
 const server = require("http").createServer(app);
-const io = require("socket.io"(server, { 
-    cors: {origin: "*"}
-})); 
+const io = require("socket.io")(server, { 
+    cors: {
+        origin: "*",
+        methods: ["GET", "POST"]
+    }
+}); 
 
 const port = 3000; 
+
+// Error handling middleware
+function errorHandler(err, req, res, next) { 
+    console.error(err.stack); 
+    res.status(500).send("Internal Server Error");
+}
+app.use(errorHandler);
+
 io.on("connection", (socket) => { 
     console.log("Connected")
 
@@ -21,13 +32,8 @@ io.on("connection", (socket) => {
     socket.on("disconnect", () => { 
         console.log("Disconnected")
     })
+});
 
-    function error(err, req, res, next) { 
-        if(!test) console.error(err.stack); 
-        res.status(500).send("Interal Server Error");
-    }
-    app.use(error)
-    server.listen(3000, () => { 
-        console.log("Listening on Port 3000")
-    })
-})
+server.listen(port, '0.0.0.0', () => { 
+    console.log(`Listening on Port ${port} on all interfaces`)
+});
