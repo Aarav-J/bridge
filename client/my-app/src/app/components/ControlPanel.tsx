@@ -42,7 +42,7 @@ const ControlPanel: React.FC<ControlPanelProps> = ({
         className={`w-12 h-12 rounded-full ${isVideoOn ? 'bg-blue-600 hover:bg-blue-700' : 'bg-gray-600 hover:bg-gray-700'} disabled:bg-gray-500 disabled:cursor-not-allowed flex items-center justify-center text-white font-bold transition-colors duration-200`}
         title={isVideoOn ? "Stop Video" : "Start Video"}
       >
-        �
+        📹
       </button>
       
       {/* +5 minute button */}

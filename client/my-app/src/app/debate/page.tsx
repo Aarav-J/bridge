@@ -48,6 +48,15 @@ export default function DebatePage() {
   const [currentSpeaker, setCurrentSpeaker] = useState<string | null>(null);
   const [phaseDescription, setPhaseDescription] = useState("");
   const [canSpeak, setCanSpeak] = useState(true);
+  const [isAudioOn, setIsAudioOn] = useState(true);
+  
+  // Audio volume states
+  const [localVolume, setLocalVolume] = useState(0);
+  const [remoteVolume, setRemoteVolume] = useState(0);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const localAnalyserRef = useRef<AnalyserNode | null>(null);
+  const remoteAnalyserRef = useRef<AnalyserNode | null>(null);
+  const animationFrameRef = useRef<number | null>(null);
   
   const router = useRouter();
   
@@ -132,23 +141,14 @@ export default function DebatePage() {
 
     socket.on('phaseStart', (data: { phase: number; speaker: string; description: string; duration: number }) => {
       console.log('Phase started:', data);
+      console.log('My user position:', userPosition);
+      console.log('Current speaker should be:', data.speaker);
+      
       setDebateActive(true);
       setCurrentPhase(data.phase);
       setCurrentSpeaker(data.speaker);
       setPhaseDescription(data.description);
       setTimeRemaining(data.duration);
-      
-      // Determine if this user can speak
-      const canUserSpeak = data.speaker === userPosition;
-      setCanSpeak(canUserSpeak);
-      
-      // Mute/unmute audio based on speaking turn
-      if (localStream) {
-        const audioTracks = localStream.getAudioTracks();
-        audioTracks.forEach(track => {
-          track.enabled = canUserSpeak;
-        });
-      }
     });
 
     socket.on('timeUpdate', (data: { timeRemaining: number }) => {
@@ -180,17 +180,49 @@ export default function DebatePage() {
       socket.off('phaseStart');
       socket.off('timeUpdate');
       socket.off('debateFinished');
+      
+      // Cleanup audio analysis
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+      }
+      if (audioContextRef.current) {
+        audioContextRef.current.close();
+      }
     };
   }, []);
 
+  // Update canSpeak state when userPosition or currentSpeaker changes
+  useEffect(() => {
+    if (userPosition && currentSpeaker && debateActive) {
+      const canUserSpeak = currentSpeaker === userPosition;
+      console.log('Updating canSpeak:', canUserSpeak, 'because currentSpeaker:', currentSpeaker, 'userPosition:', userPosition);
+      setCanSpeak(canUserSpeak);
+    } else if (!debateActive) {
+      // Outside of debate, everyone can speak
+      setCanSpeak(true);
+    }
+  }, [userPosition, currentSpeaker, debateActive]);
+
   // Handle audio muting based on speaking turns
   useEffect(() => {
-    if (localStream && debateActive) {
+    if (localStream) {
       const audioTracks = localStream.getAudioTracks();
-      audioTracks.forEach(track => {
-        track.enabled = canSpeak;
-      });
-      console.log(`Audio ${canSpeak ? 'enabled' : 'muted'} for debate`);
+      
+      if (debateActive) {
+        // During debate: follow the canSpeak rules
+        console.log(`Setting audio tracks enabled to: ${canSpeak} (found ${audioTracks.length} tracks)`);
+        audioTracks.forEach(track => {
+          track.enabled = canSpeak;
+          console.log(`Audio track ${track.id} enabled: ${track.enabled}`);
+        });
+        console.log(`Audio ${canSpeak ? 'enabled' : 'muted'} for debate`);
+      } else {
+        // Before/after debate: audio should be enabled for everyone
+        console.log(`Debate not active - enabling audio for all users`);
+        audioTracks.forEach(track => {
+          track.enabled = true;
+        });
+      }
     }
   }, [canSpeak, localStream, debateActive]);
 
@@ -204,15 +236,104 @@ export default function DebatePage() {
     });
   }, [localUser, remoteUser, userPosition, debateActive]);
 
+  // Audio volume analysis functions
+  const analyzeAudio = (analyser: AnalyserNode, setVolume: (volume: number) => void) => {
+    const bufferLength = analyser.frequencyBinCount;
+    const dataArray = new Uint8Array(bufferLength);
+    
+    const getVolume = () => {
+      analyser.getByteFrequencyData(dataArray);
+      
+      let sum = 0;
+      for (let i = 0; i < bufferLength; i++) {
+        sum += dataArray[i];
+      }
+      
+      const average = sum / bufferLength;
+      const volume = Math.round((average / 255) * 100); // Convert to percentage
+      setVolume(volume);
+    };
+    
+    return getVolume;
+  };
+
+  const startVolumeAnalysis = () => {
+    if (!audioContextRef.current) {
+      audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+    }
+
+    const analyzeLoop = () => {
+      if (localAnalyserRef.current) {
+        analyzeAudio(localAnalyserRef.current, setLocalVolume)();
+      }
+      if (remoteAnalyserRef.current) {
+        analyzeAudio(remoteAnalyserRef.current, setRemoteVolume)();
+      }
+      animationFrameRef.current = requestAnimationFrame(analyzeLoop);
+    };
+
+    analyzeLoop();
+  };
+
+  const setupAudioAnalysis = (stream: MediaStream, isLocal: boolean) => {
+    if (!audioContextRef.current) {
+      audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+    }
+
+    const source = audioContextRef.current.createMediaStreamSource(stream);
+    const analyser = audioContextRef.current.createAnalyser();
+    analyser.fftSize = 256;
+    analyser.smoothingTimeConstant = 0.8;
+    source.connect(analyser);
+
+    if (isLocal) {
+      localAnalyserRef.current = analyser;
+    } else {
+      remoteAnalyserRef.current = analyser;
+    }
+  };
+
+  // Set up audio analysis when streams are available
+  useEffect(() => {
+    if (localStream) {
+      setupAudioAnalysis(localStream, true);
+    }
+  }, [localStream]);
+
+  useEffect(() => {
+    if (remoteVideoRef.current?.srcObject) {
+      const remoteStream = remoteVideoRef.current.srcObject as MediaStream;
+      if (remoteStream.getAudioTracks().length > 0) {
+        setupAudioAnalysis(remoteStream, false);
+      }
+    }
+  }, [remoteVideoRef.current?.srcObject]);
+
+  // Start volume analysis when both analysers are ready
+  useEffect(() => {
+    if (localAnalyserRef.current || remoteAnalyserRef.current) {
+      startVolumeAnalysis();
+    }
+
+    return () => {
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+      }
+    };
+  }, [localAnalyserRef.current, remoteAnalyserRef.current]);
+
   // Send ready message when both local stream and remote user are available
   useEffect(() => {
     if (localStream && remoteUser && !pc) {
       console.log("Both users detected, sending ready signal");
-      socket.emit("message", { 
-        type: "ready", 
-        userName: localUser.name, 
-        userAffiliation: localUser.affiliation 
-      });
+      // Add a small delay to ensure everything is set up
+      setTimeout(() => {
+        socket.emit("message", { 
+          type: "ready", 
+          userName: localUser.name, 
+          userAffiliation: localUser.affiliation 
+        });
+      }, 1000);
     }
   }, [localStream, remoteUser, pc, localUser, socket]);
 
@@ -297,7 +418,13 @@ export default function DebatePage() {
         timeButtonRef.current.disabled = false;
       }
       
-      console.log("Local stream started successfully");
+      // Ensure audio is enabled by default
+      const audioTracks = stream.getAudioTracks();
+      audioTracks.forEach(track => {
+        track.enabled = true;
+      });
+      
+      console.log("Local stream started successfully with audio enabled");
       
     } catch (error) {
       console.error("Error accessing media devices:", error);
@@ -308,17 +435,26 @@ export default function DebatePage() {
   const toggleVideo = (): void => {
     if (localStream) {
       const videoTrack = localStream.getVideoTracks()[0];
-      const audioTrack = localStream.getAudioTracks()[0];
       
       if (videoTrack) {
         videoTrack.enabled = !videoTrack.enabled;
         setIsVideoOn(videoTrack.enabled);
         
-        // When video is off, audio should also be off
-        if (audioTrack) {
-          audioTrack.enabled = videoTrack.enabled;
-        }
+        // Don't touch audio when toggling video - audio is controlled by debate muting logic
+        console.log(`Video toggled to: ${videoTrack.enabled}`);
       }
+    }
+  };
+
+  const toggleAudio = (): void => {
+    if (localStream) {
+      const audioTracks = localStream.getAudioTracks();
+      const newAudioState = !isAudioOn;
+      setIsAudioOn(newAudioState);
+      audioTracks.forEach(track => {
+        track.enabled = newAudioState;
+        console.log(`Audio manually toggled to: ${track.enabled}`);
+      });
     }
   };
 
@@ -330,6 +466,7 @@ export default function DebatePage() {
 
   const makeCall = async (): Promise<void> => {
     try {
+      console.log("Making call - creating peer connection");
       const newPc = new RTCPeerConnection(configuration);
       setPc(newPc);
       
@@ -340,28 +477,32 @@ export default function DebatePage() {
           sdpMid: e.candidate?.sdpMid || null,
           sdpMLineIndex: e.candidate?.sdpMLineIndex || null,
         };
+        console.log("Sending ICE candidate");
         socket.emit("message", message);
       };
       
       newPc.ontrack = (e: RTCTrackEvent) => {
+        console.log("Received remote track", e.streams[0]);
         if (remoteVideoRef.current) {
           remoteVideoRef.current.srcObject = e.streams[0];
         }
       };
       
       if (localStream) {
+        console.log("Adding local tracks to peer connection");
         localStream.getTracks().forEach((track: MediaStreamTrack) => {
           if (localStream) {
             newPc.addTrack(track, localStream);
           }
         });
         
+        console.log("Creating and sending offer");
         const offer = await newPc.createOffer();
         socket.emit("message", { type: "offer", sdp: offer.sdp });
         await newPc.setLocalDescription(offer);
       }
     } catch (e) {
-      console.log(e);
+      console.error("Error in makeCall:", e);
     }
   };
 
@@ -371,6 +512,7 @@ export default function DebatePage() {
       return;
     }
     try {
+      console.log("Received offer, creating peer connection");
       const newPc = new RTCPeerConnection(configuration);
       setPc(newPc);
       
@@ -381,16 +523,19 @@ export default function DebatePage() {
           sdpMid: e.candidate?.sdpMid || null,
           sdpMLineIndex: e.candidate?.sdpMLineIndex || null,
         };
+        console.log("Sending ICE candidate from answer side");
         socket.emit("message", message);
       };
       
       newPc.ontrack = (e: RTCTrackEvent) => {
+        console.log("Received remote track on answer side", e.streams[0]);
         if (remoteVideoRef.current) {
           remoteVideoRef.current.srcObject = e.streams[0];
         }
       };
       
       if (localStream) {
+        console.log("Adding local tracks on answer side");
         localStream.getTracks().forEach((track: MediaStreamTrack) => {
           if (localStream) {
             newPc.addTrack(track, localStream);
@@ -398,12 +543,13 @@ export default function DebatePage() {
         });
       }
       
+      console.log("Setting remote description and creating answer");
       await newPc.setRemoteDescription({ type: "offer", sdp: offer.sdp || "" });
       const answer = await newPc.createAnswer();
       socket.emit("message", { type: "answer", sdp: answer.sdp });
       await newPc.setLocalDescription(answer);
     } catch (e) {
-      console.log(e);
+      console.error("Error in handleOffer:", e);
     }
   };
 
@@ -491,6 +637,24 @@ export default function DebatePage() {
             label={localUser.affiliation === "Unknown" ? "Setting up..." : localUser.affiliation}
             muted={true}
           />
+          {/* Local volume indicator */}
+          <div className="absolute bottom-4 right-4 bg-black bg-opacity-60 rounded-lg p-2 min-w-20">
+            <div className="text-white text-xs mb-1">Volume</div>
+            <div className="flex items-center space-x-1">
+              <div className="w-2 h-8 bg-gray-600 rounded-sm relative overflow-hidden">
+                <div 
+                  className={`absolute bottom-0 w-full transition-all duration-100 rounded-sm ${
+                    localVolume > 70 ? 'bg-red-500' : 
+                    localVolume > 40 ? 'bg-yellow-500' : 'bg-green-500'
+                  }`}
+                  style={{ height: `${Math.min(localVolume, 100)}%` }}
+                />
+              </div>
+              <div className="text-white text-xs font-mono">
+                {localVolume}dB
+              </div>
+            </div>
+          </div>
         </div>
         
         {/* Bottom video - Remote user - 50% of vertical space */}
@@ -500,6 +664,24 @@ export default function DebatePage() {
             name={remoteUser?.name || "Waiting for participant..."}
             label={remoteUser?.affiliation || ""}
           />
+          {/* Remote volume indicator */}
+          <div className="absolute bottom-4 left-4 bg-black bg-opacity-60 rounded-lg p-2 min-w-20">
+            <div className="text-white text-xs mb-1">Volume</div>
+            <div className="flex items-center space-x-1">
+              <div className="w-2 h-8 bg-gray-600 rounded-sm relative overflow-hidden">
+                <div 
+                  className={`absolute bottom-0 w-full transition-all duration-100 rounded-sm ${
+                    remoteVolume > 70 ? 'bg-red-500' : 
+                    remoteVolume > 40 ? 'bg-yellow-500' : 'bg-green-500'
+                  }`}
+                  style={{ height: `${Math.min(remoteVolume, 100)}%` }}
+                />
+              </div>
+              <div className="text-white text-xs font-mono">
+                {remoteVolume}dB
+              </div>
+            </div>
+          </div>
         </div>
       </div>
       
