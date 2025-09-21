@@ -1,5 +1,8 @@
 "use client";
 
+import { useSearchParams } from 'next/navigation';
+import { supabase } from '../../utils/supabaseClient';
+
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
@@ -15,6 +18,10 @@ export default function QuizPage() {
   const [userData, setUserData] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(true);
   const router = useRouter();
+
+  const searchParams = useSearchParams();
+  const userId = searchParams.get('id');
+
 
   // Check if user is signed up and hasn't completed quiz
   useEffect(() => {
@@ -124,7 +131,7 @@ export default function QuizPage() {
     return scores.reduce((sum, score) => sum + score, 0) / scores.length;
   };
 
-  const handleFinish = () => {
+  const handleFinish = async () => {
     // Mark quiz as completed in user data
     const updatedUserData = {
       ...userData,
@@ -136,8 +143,30 @@ export default function QuizPage() {
       }
     };
     
-    localStorage.setItem('userData', JSON.stringify(updatedUserData));
+    // localStorage is NO LONGER
+    // localStorage.setItem('userData', JSON.stringify(updatedUserData));
     
+    // Save results to Supabase if userId is present
+    if (userId && spectrum) {
+      // 1. Update overall_affiliation in public.profiles
+      await supabase
+        .from('profiles')
+        .update({ overall_affiliation: spectrum.overall })
+        .eq('id', userId);
+
+      // 2. Upsert individual category affiliations in public.political_spectrum
+      const spectrumPayload = [
+        { user_id: userId, category: 'economic', value: spectrum.economic },
+        { user_id: userId, category: 'social', value: spectrum.social },
+        { user_id: userId, category: 'foreignPolicy', value: spectrum.foreignPolicy },
+        { user_id: userId, category: 'governance', value: spectrum.governance },
+        { user_id: userId, category: 'cultural', value: spectrum.cultural }
+      ];
+      await supabase
+        .from('political_spectrum')
+        .upsert(spectrumPayload, { onConflict: 'user_id,category' });
+    }
+
     // Redirect to home page
     router.push('/');
   };

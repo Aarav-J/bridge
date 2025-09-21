@@ -44,7 +44,8 @@ export default function AccountPage() {
   const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
-    const storedUserData = localStorage.getItem('userData');
+    // localStorage is NO LONGER
+    // const storedUserData = localStorage.getItem('userData');
     if (storedUserData) {
       const parsedData = JSON.parse(storedUserData);
       setUserData(parsedData);
@@ -148,7 +149,8 @@ export default function AccountPage() {
     };
 
     // Save to localStorage
-    localStorage.setItem('userData', JSON.stringify(updatedUserData));
+    // localStorage is NO LONGER
+    // localStorage.setItem('userData', JSON.stringify(updatedUserData));
     setUserData(updatedUserData);
     setIsEditing(false);
     setIsSaving(false);
