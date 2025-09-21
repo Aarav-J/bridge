@@ -25,15 +25,17 @@ interface SocketMessage {
   userAffiliation?: string;
 }
 
+
 interface UserInfo {
   name: string;
   affiliation: string;
 }
 
-const socket: Socket = io("http://localhost:3001", { transports: ["websocket"] });
+const SOCKET_URL = process.env.NEXT_PUBLIC_SOCKET_URL?.trim() || "http://10.186.63.83:3000";
+
+const socket: Socket = io(SOCKET_URL, { transports: ["websocket"] });
 
 export default function DebatePage() {
-  const [pc, setPc] = useState<RTCPeerConnection | null>(null);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [isCallActive, setIsCallActive] = useState(false);
   const [isVideoOn, setIsVideoOn] = useState(true);
@@ -65,41 +67,62 @@ export default function DebatePage() {
   const videoButtonRef = useRef<HTMLButtonElement>(null);
   const timeButtonRef = useRef<HTMLButtonElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
-  const localVideoRef = useRef<HTMLVideoElement>(null); 
+  const localVideoRef = useRef<HTMLVideoElement>(null);
+  const pcRef = useRef<RTCPeerConnection | null>(null);
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const userPositionRef = useRef<string | null>(null);
+  const readySentRef = useRef(false);
   useEffect(() => {
-    // Auto-start the call when component mounts
-    startLocalStream();
+    let isMounted = true;
 
-    // Get user data from localStorage (set from main page)
-    const storedUserData = localStorage.getItem('userData');
-    if (storedUserData) {
-      const userData = JSON.parse(storedUserData);
-      console.log('Setting local user from localStorage:', userData);
-      setLocalUser(userData);
-      
-      // Join the debate room
-      console.log('Joining debate with user data:', userData);
-      socket.emit("join-debate", {
-        name: userData.name,
-        affiliation: userData.affiliation
-      });
-    } else {
-      console.log('No user data found in localStorage');
-    }
+    const initialize = async () => {
+      try {
+        await startLocalStream();
+      } catch (err) {
+        console.error('Aborting initialization because local media failed', err);
+        return;
+      }
+
+      if (!isMounted) {
+        return;
+      }
+
+      // Get user data from localStorage (set from main page)
+      const storedUserData = localStorage.getItem('userData');
+      if (storedUserData) {
+        const userData = JSON.parse(storedUserData);
+        console.log('Setting local user from localStorage:', userData);
+        setLocalUser(userData);
+
+        // Join the debate room
+        console.log('Joining debate with user data:', userData);
+        socket.emit("join-debate", {
+          name: userData.name,
+          affiliation: userData.affiliation
+        });
+      } else {
+        console.log('No user data found in localStorage');
+      }
+    };
+
+    initialize();
 
     // Set up socket event listeners
     socket.on("joined-debate", (data) => {
       console.log("Successfully joined debate:", data);
       setUserPosition(data.position);
+      userPositionRef.current = data.position;
       
       // Set remote user if there's another participant
       Object.keys(data.participants).forEach(pos => {
         if (pos !== data.position) {
           const participant = data.participants[pos];
-          setRemoteUser({
+          const info = {
             name: participant.name,
             affiliation: participant.affiliation
-          });
+          };
+          setRemoteUser(info);
+          readySentRef.current = false;
         }
       });
     });
@@ -107,12 +130,12 @@ export default function DebatePage() {
     socket.on("user-joined", (data) => {
       console.log("Another user joined:", data);
       setRemoteUser(data.user);
+      readySentRef.current = false;
     });
 
     socket.on("user-left", (data) => {
       console.log("User left:", data);
-      setRemoteUser(null);
-      setDebateActive(false);
+      resetRemoteState();
     });
 
     socket.on("room-full", () => {
@@ -142,13 +165,14 @@ export default function DebatePage() {
       setCurrentSpeaker(null);
       setPhaseDescription("");
       setCanSpeak(true);
+      readySentRef.current = false;
     });
 
     // Handle WebRTC signaling
     socket.on("webrtc-signal", (data) => {
       console.log("Received WebRTC signal:", data.type);
-      if (!localStream) {
-        console.log("Local stream not ready yet");
+      if (!localStreamRef.current) {
+        console.log("Local stream not ready yet; ignoring signal", data.type);
         return;
       }
       
@@ -163,21 +187,20 @@ export default function DebatePage() {
           handleCandidate(data);
           break;
         case "ready":
-          if (remoteUser && localStream) {
-            console.log("Both users ready, initiating call");
+          if (!pcRef.current && userPositionRef.current === "user1") {
+            console.log("Received ready signal and acting as initiator");
             makeCall();
           }
           break;
         case "bye":
-          if (pc) {
-            hangup();
-          }
+          resetRemoteState();
           break;
       }
     });
 
     // Cleanup function
     return () => {
+      isMounted = false;
       socket.off("joined-debate");
       socket.off("user-joined");
       socket.off("user-left");
@@ -193,6 +216,11 @@ export default function DebatePage() {
       }
       if (audioContextRef.current) {
         audioContextRef.current.close();
+      }
+      closePeerConnection();
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach(track => track.stop());
+        localStreamRef.current = null;
       }
     };
   }, []);
@@ -330,30 +358,41 @@ export default function DebatePage() {
 
   // Send ready signal when both local stream and remote user are available
   useEffect(() => {
-    if (localStream && remoteUser && !pc) {
+    if (localStreamRef.current && remoteUser && !readySentRef.current) {
+      readySentRef.current = true;
       console.log("Both users detected, sending WebRTC ready signal");
       setTimeout(() => {
-        socket.emit("webrtc-signal", { 
-          type: "ready"
-        });
-      }, 1000);
+        socket.emit("webrtc-signal", { type: "ready" });
+      }, 500);
     }
-  }, [localStream, remoteUser, pc]);
+  }, [remoteUser]);
 
-  const startLocalStream = async (): Promise<void> => {
+  const startLocalStream = async (): Promise<MediaStream | undefined> => {
+    if (localStreamRef.current) {
+      console.log("Local stream already initialized");
+      setLocalStream(localStreamRef.current);
+      setIsCallActive(true);
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = localStreamRef.current;
+      }
+      return localStreamRef.current;
+    }
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: true,
         audio: true
       });
-      
+
+      localStreamRef.current = stream;
+      readySentRef.current = false;
       setLocalStream(stream);
       setIsCallActive(true);
-      
+
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
       }
-      
+
       if (startButtonRef.current) {
         startButtonRef.current.disabled = true;
       }
@@ -366,29 +405,33 @@ export default function DebatePage() {
       if (timeButtonRef.current) {
         timeButtonRef.current.disabled = false;
       }
-      
+
       // Ensure audio is enabled by default
       const audioTracks = stream.getAudioTracks();
       audioTracks.forEach(track => {
         track.enabled = true;
       });
-      
+
       console.log("Local stream started successfully with audio enabled");
-      
+      setIsAudioOn(true);
+      setIsVideoOn(true);
+      return stream;
     } catch (error) {
       console.error("Error accessing media devices:", error);
       alert("Could not access camera/microphone. Please check permissions.");
+      throw error;
     }
   };
 
   const toggleVideo = (): void => {
-    if (localStream) {
-      const videoTrack = localStream.getVideoTracks()[0];
-      
+    const stream = localStreamRef.current;
+    if (stream) {
+      const videoTrack = stream.getVideoTracks()[0];
+
       if (videoTrack) {
         videoTrack.enabled = !videoTrack.enabled;
         setIsVideoOn(videoTrack.enabled);
-        
+
         // Don't touch audio when toggling video - audio is controlled by debate muting logic
         console.log(`Video toggled to: ${videoTrack.enabled}`);
       }
@@ -396,8 +439,9 @@ export default function DebatePage() {
   };
 
   const toggleAudio = (): void => {
-    if (localStream) {
-      const audioTracks = localStream.getAudioTracks();
+    const stream = localStreamRef.current;
+    if (stream) {
+      const audioTracks = stream.getAudioTracks();
       const newAudioState = !isAudioOn;
       setIsAudioOn(newAudioState);
       audioTracks.forEach(track => {
@@ -413,11 +457,45 @@ export default function DebatePage() {
     // You can implement actual timer logic here
   };
 
+  const closePeerConnection = () => {
+    if (pcRef.current) {
+      pcRef.current.close();
+      pcRef.current = null;
+    }
+    if (remoteVideoRef.current) {
+      remoteVideoRef.current.srcObject = null;
+    }
+  };
+
+  const resetRemoteState = () => {
+    setRemoteUser(null);
+    setDebateActive(false);
+    setCurrentPhase(0);
+    setTimeRemaining(0);
+    setCurrentSpeaker(null);
+    setPhaseDescription("");
+    setCanSpeak(true);
+    setRemoteVolume(0);
+    readySentRef.current = false;
+    closePeerConnection();
+  };
+
   const makeCall = async (): Promise<void> => {
     try {
+      if (pcRef.current) {
+        console.log("Peer connection already exists, skipping new call");
+        return;
+      }
+
+      const stream = localStreamRef.current;
+      if (!stream) {
+        console.warn("No local stream available, aborting makeCall");
+        return;
+      }
+
       console.log("Making call - creating peer connection");
       const newPc = new RTCPeerConnection(configuration);
-      setPc(newPc);
+      pcRef.current = newPc;
       
       newPc.onicecandidate = (e: RTCPeerConnectionIceEvent) => {
         const data = {
@@ -437,33 +515,36 @@ export default function DebatePage() {
         }
       };
       
-      if (localStream) {
-        console.log("Adding local tracks to peer connection");
-        localStream.getTracks().forEach((track: MediaStreamTrack) => {
-          if (localStream) {
-            newPc.addTrack(track, localStream);
-          }
-        });
-        
-        console.log("Creating and sending offer");
-        const offer = await newPc.createOffer();
-        socket.emit("webrtc-signal", { type: "offer", sdp: offer.sdp });
-        await newPc.setLocalDescription(offer);
-      }
+      console.log("Adding local tracks to peer connection");
+      stream.getTracks().forEach((track: MediaStreamTrack) => {
+        newPc.addTrack(track, stream);
+      });
+
+      console.log("Creating and sending offer");
+      const offer = await newPc.createOffer();
+      socket.emit("webrtc-signal", { type: "offer", sdp: offer.sdp });
+      await newPc.setLocalDescription(offer);
     } catch (e) {
       console.error("Error in makeCall:", e);
     }
   };
 
   const handleOffer = async (offer: SocketMessage): Promise<void> => {
-    if (pc) {
-      console.error("existing peerconnection");
-      return;
-    }
     try {
+      const stream = localStreamRef.current;
+      if (!stream) {
+        console.warn("Local stream not ready when handling offer; skipping");
+        return;
+      }
+
+      if (pcRef.current) {
+        console.warn("Existing peer connection found; closing before handling offer");
+        pcRef.current.close();
+      }
+
       console.log("Received offer, creating peer connection");
       const newPc = new RTCPeerConnection(configuration);
-      setPc(newPc);
+      pcRef.current = newPc;
       
       newPc.onicecandidate = (e: RTCPeerConnectionIceEvent) => {
         const data = {
@@ -483,14 +564,10 @@ export default function DebatePage() {
         }
       };
       
-      if (localStream) {
-        console.log("Adding local tracks on answer side");
-        localStream.getTracks().forEach((track: MediaStreamTrack) => {
-          if (localStream) {
-            newPc.addTrack(track, localStream);
-          }
-        });
-      }
+      console.log("Adding local tracks on answer side");
+      stream.getTracks().forEach((track: MediaStreamTrack) => {
+        newPc.addTrack(track, stream);
+      });
       
       console.log("Setting remote description and creating answer");
       await newPc.setRemoteDescription({ type: "offer", sdp: offer.sdp || "" });
@@ -503,12 +580,13 @@ export default function DebatePage() {
   };
 
   const handleAnswer = async (answer: SocketMessage): Promise<void> => {
-    if (!pc) {
+    const connection = pcRef.current;
+    if (!connection) {
       console.error("no peerconnection");
       return;
     }
     try {
-      await pc.setRemoteDescription({ type: "answer", sdp: answer.sdp || "" });
+      await connection.setRemoteDescription({ type: "answer", sdp: answer.sdp || "" });
     } catch (e) {
       console.log(e);
     }
@@ -516,46 +594,45 @@ export default function DebatePage() {
 
   const handleCandidate = async (candidate: SocketMessage): Promise<void> => {
     try {
-      if (!pc) {
+      const connection = pcRef.current;
+      if (!connection) {
         console.error("no peerconnection");
         return;
       }
       if (!candidate.candidate) {
-        await pc.addIceCandidate(null);
+        await connection.addIceCandidate(null);
       } else {
         const iceCandidate = new RTCIceCandidate({
           candidate: candidate.candidate,
           sdpMid: candidate.sdpMid,
           sdpMLineIndex: candidate.sdpMLineIndex,
         });
-        await pc.addIceCandidate(iceCandidate);
+        await connection.addIceCandidate(iceCandidate);
       }
     } catch (e) {
       console.log(e);
     }
   };
 
-  const hangup = async (): Promise<void> => {
-    if (pc) {
-      pc.close();
-      setPc(null);
+  const hangup = (): void => {
+    resetRemoteState();
+
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach((track: MediaStreamTrack) => track.stop());
+      localStreamRef.current = null;
     }
-    if (localStream) {
-      localStream.getTracks().forEach((track: MediaStreamTrack) => track.stop());
-      setLocalStream(null);
-    }
-    
-    setIsCallActive(false);
-    
-    // Clear video elements
     if (localVideoRef.current) {
       localVideoRef.current.srcObject = null;
     }
-    if (remoteVideoRef.current) {
-      remoteVideoRef.current.srcObject = null;
-    }
-    
-    // Reset button states
+
+    setLocalStream(null);
+    setLocalVolume(0);
+    readySentRef.current = false;
+    userPositionRef.current = null;
+    setIsAudioOn(true);
+    setIsVideoOn(true);
+    setIsCallActive(false);
+
     if (startButtonRef.current) {
       startButtonRef.current.disabled = false;
     }
@@ -568,10 +645,9 @@ export default function DebatePage() {
     if (timeButtonRef.current) {
       timeButtonRef.current.disabled = true;
     }
-    
-    // Signal hangup to other peer
+
     socket.emit("webrtc-signal", { type: "bye" });
-    router.push('/'); // Redirect to landing page after hangup
+    router.push('/');
   };
 
   return (
