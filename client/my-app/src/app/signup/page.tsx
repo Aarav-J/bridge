@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { supabase } from "../../utils/supabaseClient";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 
@@ -107,16 +108,18 @@ export default function SignupPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
     if (!validateForm()) {
       return;
     }
-
     setIsSubmitting(true);
 
-    // Simulate API call delay
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    // 1. Create user in Supabase Auth
+    const { data, error } = await supabase.auth.signUp({
+      email: formData.email,
+      password: formData.username + formData.age // Example: use username+age as password (replace with real password logic)
+    });
 
+<<<<<<< HEAD
     // Store user data in localStorage for demo purposes
     const userData = {
       fullName: formData.fullName,
@@ -128,7 +131,51 @@ export default function SignupPage() {
       signupDate: new Date().toISOString()
     };
     localStorage.setItem('userData', JSON.stringify(userData));
+=======
+    if (error) {
+      setErrors(prev => ({ ...prev, email: error.message }));
+      setIsSubmitting(false);
+      return;
+    }
+>>>>>>> supabase-auth
 
+    const userId = data?.user?.id;
+    if (!userId) {
+      setErrors(prev => ({ ...prev, email: "Signup failed. No user ID returned." }));
+      setIsSubmitting(false);
+      return;
+    }
+
+    // 2. Insert profile data into Supabase profiles table (public info only)
+    const { error: profileError } = await supabase.from('profiles').upsert([
+      {
+        id: userId,
+        full_name: formData.fullName,
+        username: formData.username
+      }
+    ]);
+
+    if (profileError) {
+      setErrors(prev => ({ ...prev, username: profileError.message }));
+      setIsSubmitting(false);
+      return;
+    }
+
+    // 3. Insert private data into private_user_data table
+    const { error: privateError } = await supabase.from('private_user_data').upsert([
+      {
+        user_id: userId,
+        email: formData.email,
+        age: parseInt(formData.age)
+      }
+    ]);
+
+    if (privateError) {
+      setErrors(prev => ({ ...prev, email: privateError.message }));
+      setIsSubmitting(false);
+      return;
+    }
+    console.error("yoo it made it");
     // Redirect to quiz
     router.push('/quiz');
   };
