@@ -4,6 +4,9 @@ import Link from "next/link";
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { io, Socket } from "socket.io-client";
+
+const SOCKET_URL = process.env.NEXT_PUBLIC_SOCKET_URL?.trim() || "http://localhost:3000";
+const API_BASE = SOCKET_URL.replace(/\/+$/, "");
 import UserProfile from "@/app/components/UserProfile";
 
 export default function HomePage() {
@@ -13,7 +16,8 @@ export default function HomePage() {
   const [isConnected, setIsConnected] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
   const [activeUsers, setActiveUsers] = useState<any[]>([]);
-  const [debateStatus, setDebateStatus] = useState({ participants: 0, active: false });
+  const [debateStatus, setDebateStatus] = useState({ participants: 0, active: false, waiting: 0 });
+  const [matchStatus, setMatchStatus] = useState<string | null>(null);
   const router = useRouter();
 
   useEffect(() => {
@@ -22,17 +26,18 @@ export default function HomePage() {
       setUserData(JSON.parse(storedUserData));
     }
     setIsLoading(false);
-  }, []);
+  }, [router]);
 
   useEffect(() => {
     // Initialize Socket.IO connection
-    const newSocket = io("http://10.186.63.83:3000", { 
+    const newSocket = io(SOCKET_URL, { 
       transports: ["websocket"] 
     });
 
     newSocket.on("connect", () => {
       console.log("Connected to server");
       setIsConnected(true);
+      setMatchStatus(null);
       // Request current user list
       fetchActiveUsers();
     });
@@ -40,6 +45,8 @@ export default function HomePage() {
     newSocket.on("disconnect", () => {
       console.log("Disconnected from server");
       setIsConnected(false);
+      setIsStarting(false);
+      setMatchStatus("disconnected");
     });
 
     // Listen for user updates
@@ -48,25 +55,68 @@ export default function HomePage() {
       setActiveUsers(data.connectedUsers);
       setDebateStatus({
         participants: data.debateParticipants,
-        active: data.debateActive || false
+        active: data.debateActive || false,
+        waiting: data.waitingCount || 0
       });
+    });
+
+    newSocket.on("matchmaking-status", (payload) => {
+      console.log("Matchmaking status:", payload);
+      setMatchStatus(payload?.status || null);
+      if (payload?.status === "waiting") {
+        setIsStarting(true);
+      }
+      if (payload?.status === "cancelled" || payload?.status === "matched") {
+        setIsStarting(false);
+      }
+    });
+
+    newSocket.on("match-found", (payload) => {
+      console.log("Match found:", payload);
+      setIsStarting(false);
+      setMatchStatus("matched");
+
+      try {
+        sessionStorage.setItem(
+          "activeMatch",
+          JSON.stringify({
+            roomId: payload.roomId,
+            position: payload.position,
+            opponent: payload.match || null
+          })
+        );
+      } catch (err) {
+        console.warn("Unable to store activeMatch", err);
+      }
+
+      router.push(`/debate?room=${payload.roomId}`);
+    });
+
+    newSocket.on("match-disconnected", () => {
+      console.log("Match disconnected by opponent");
+      setIsStarting(false);
+      setMatchStatus("opponent-disconnected");
     });
 
     setSocket(newSocket);
 
     return () => {
+      if (newSocket.connected) {
+        newSocket.emit("cancel-matchmaking");
+      }
       newSocket.close();
     };
   }, []);
 
   const fetchActiveUsers = async () => {
     try {
-      const response = await fetch("http://10.186.63.83:3000/api/active-users");
+      const response = await fetch(`${API_BASE}/api/active-users`);
       const data = await response.json();
       setActiveUsers(data.users);
       setDebateStatus({
         participants: data.debateParticipants,
-        active: data.debateActive
+        active: data.debateActive,
+        waiting: data.waitingCount || 0
       });
     } catch (error) {
       console.error("Failed to fetch active users:", error);
@@ -96,8 +146,18 @@ export default function HomePage() {
     });
 
     // Navigate directly to debate page without URL parameters
-    console.log("Navigating to: /debate");
-    router.push("/debate");
+    socket.emit("join-matchmaking", {
+      name: userData.fullName,
+      affiliation: userData.politicalLean
+    });
+
+    try {
+      sessionStorage.removeItem('activeMatch');
+    } catch (err) {
+      console.warn('Unable to clear existing activeMatch', err);
+    }
+
+    setMatchStatus("searching");
   };
 
   return (
@@ -199,8 +259,10 @@ export default function HomePage() {
                   <svg className="w-6 h-6 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
                   </svg>
-                  {isStarting 
-                    ? "Starting..." 
+                  {isStarting
+                    ? matchStatus === "waiting" || matchStatus === "searching"
+                      ? "Searching..."
+                      : "Starting..."
                     : isConnected 
                       ? "Start Video Call" 
                       : "Connecting..."
@@ -208,8 +270,26 @@ export default function HomePage() {
                 </button>
 
                 <p className="text-gray-500 text-xs mt-4">
-                  Connect with someone for a structured political debate
+                  {isStarting
+                    ? matchStatus === "waiting" || matchStatus === "searching"
+                      ? "Looking for a debate partner..."
+                      : matchStatus === "matched"
+                        ? "Match found! Launching debate room..."
+                        : matchStatus === "opponent-disconnected"
+                          ? "Previous opponent disconnected. Please wait while we find someone else."
+                          : "Preparing your debate session..."
+                    : "Connect with someone for a structured political debate"}
                 </p>
+                {!isStarting && matchStatus === "opponent-disconnected" && (
+                  <p className="text-yellow-400 text-xs mt-2">
+                    Your previous opponent left. Hit the button again to find a new match.
+                  </p>
+                )}
+                {!isStarting && matchStatus === "disconnected" && (
+                  <p className="text-red-400 text-xs mt-2">
+                    Connection lost. Please wait for reconnection before starting a new debate.
+                  </p>
+                )}
               </div>
             ) : userData && !userData.quizCompleted ? (
               <div className="bg-gray-800 rounded-lg p-8 shadow-xl max-w-md w-full text-center">
@@ -251,7 +331,7 @@ export default function HomePage() {
                 <div className={`w-3 h-3 rounded-full mr-3 ${isConnected ? 'bg-green-500' : 'bg-red-500'}`}></div>
                 Active Users
               </h3>
-              <div className="text-sm text-gray-400">
+              <div className="text-sm text-gray-400 text-right">
                 {debateStatus.active ? (
                   <span className="bg-green-900 text-green-300 px-2 py-1 rounded">
                     Debate in Progress ({debateStatus.participants}/2)
@@ -265,6 +345,9 @@ export default function HomePage() {
                     No Active Debate
                   </span>
                 )}
+                <p className="text-xs text-gray-500 mt-1">
+                  Users waiting for a match: {debateStatus.waiting ?? 0}
+                </p>
               </div>
             </div>
 

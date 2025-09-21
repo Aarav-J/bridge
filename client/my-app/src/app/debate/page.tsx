@@ -1,10 +1,10 @@
 "use client";
 
 import { io, Socket } from "socket.io-client";
-import { useRef, useEffect, useState } from "react";
+import { useRef, useEffect, useState, useMemo } from "react";
 import Video from "../components/Video";
 import ControlPanel from "../components/ControlPanel";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 const configuration: RTCConfiguration = {
   iceServers: [
@@ -31,7 +31,7 @@ interface UserInfo {
   affiliation: string;
 }
 
-const SOCKET_URL = process.env.NEXT_PUBLIC_SOCKET_URL?.trim() || "http://10.186.63.83:3000";
+const SOCKET_URL = process.env.NEXT_PUBLIC_SOCKET_URL?.trim() || "http://localhost:3000";
 
 const socket: Socket = io(SOCKET_URL, { transports: ["websocket"] });
 
@@ -61,6 +61,9 @@ export default function DebatePage() {
   const animationFrameRef = useRef<number | null>(null);
   
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const roomId = useMemo(() => searchParams.get("room")?.trim() || "default", [searchParams]);
+  const roomIdRef = useRef(roomId);
   
   const startButtonRef = useRef<HTMLButtonElement>(null);
   const hangupButtonRef = useRef<HTMLButtonElement>(null);
@@ -72,6 +75,33 @@ export default function DebatePage() {
   const localStreamRef = useRef<MediaStream | null>(null);
   const userPositionRef = useRef<string | null>(null);
   const readySentRef = useRef(false);
+
+  useEffect(() => {
+    roomIdRef.current = roomId;
+    readySentRef.current = false;
+    resetRemoteState();
+  }, [roomId]);
+
+  useEffect(() => {
+    try {
+      const stored = sessionStorage.getItem('activeMatch');
+      if (!stored) return;
+      const parsed = JSON.parse(stored);
+      if (parsed?.roomId && parsed.roomId !== roomId) {
+        sessionStorage.removeItem('activeMatch');
+        return;
+      }
+      if (parsed?.position && !userPositionRef.current) {
+        userPositionRef.current = parsed.position;
+        setUserPosition(parsed.position);
+      }
+      if (!remoteUser && parsed?.opponent) {
+        setRemoteUser(parsed.opponent);
+      }
+    } catch (err) {
+      console.warn('Failed to parse activeMatch from sessionStorage', err);
+    }
+  }, [roomId, remoteUser]);
   useEffect(() => {
     let isMounted = true;
 
@@ -95,10 +125,11 @@ export default function DebatePage() {
         setLocalUser(userData);
 
         // Join the debate room
-        console.log('Joining debate with user data:', userData);
+        console.log('Joining debate with user data:', userData, 'room:', roomIdRef.current);
         socket.emit("join-debate", {
           name: userData.name,
-          affiliation: userData.affiliation
+          affiliation: userData.affiliation,
+          roomId: roomIdRef.current
         });
       } else {
         console.log('No user data found in localStorage');
@@ -109,14 +140,19 @@ export default function DebatePage() {
 
     // Set up socket event listeners
     socket.on("joined-debate", (data) => {
+      if (data?.roomId && data.roomId !== roomIdRef.current) {
+        console.log('Ignoring joined-debate for room', data.roomId);
+        return;
+      }
       console.log("Successfully joined debate:", data);
       setUserPosition(data.position);
       userPositionRef.current = data.position;
       
       // Set remote user if there's another participant
-      Object.keys(data.participants).forEach(pos => {
+      const participants = data.participants || {};
+      Object.keys(participants).forEach(pos => {
         if (pos !== data.position) {
-          const participant = data.participants[pos];
+          const participant = participants[pos];
           const info = {
             name: participant.name,
             affiliation: participant.affiliation
@@ -128,23 +164,35 @@ export default function DebatePage() {
     });
 
     socket.on("user-joined", (data) => {
+      if (data?.roomId && data.roomId !== roomIdRef.current) {
+        return;
+      }
       console.log("Another user joined:", data);
       setRemoteUser(data.user);
       readySentRef.current = false;
     });
 
     socket.on("user-left", (data) => {
+      if (data?.roomId && data.roomId !== roomIdRef.current) {
+        return;
+      }
       console.log("User left:", data);
       resetRemoteState();
     });
 
-    socket.on("room-full", () => {
-      console.log("Room is full");
+    socket.on("room-full", (payload) => {
+      if (payload?.roomId && payload.roomId !== roomIdRef.current) {
+        return;
+      }
+      console.log("Room is full", payload);
       alert("Debate room is full. Only 2 participants allowed at a time.");
       router.push('/');
     });
 
     socket.on("phase-start", (data) => {
+      if (data?.roomId && data.roomId !== roomIdRef.current) {
+        return;
+      }
       console.log("Phase started:", data);
       setDebateActive(true);
       setCurrentPhase(data.phase);
@@ -154,11 +202,17 @@ export default function DebatePage() {
     });
 
     socket.on("time-update", (data) => {
+      if (data?.roomId && data.roomId !== roomIdRef.current) {
+        return;
+      }
       setTimeRemaining(data.timeRemaining);
     });
 
-    socket.on("debate-finished", () => {
-      console.log("Debate finished");
+    socket.on("debate-finished", (payload) => {
+      if (payload?.roomId && payload.roomId !== roomIdRef.current) {
+        return;
+      }
+      console.log("Debate finished", payload);
       setDebateActive(false);
       setCurrentPhase(0);
       setTimeRemaining(0);
@@ -168,8 +222,33 @@ export default function DebatePage() {
       readySentRef.current = false;
     });
 
+    socket.on("debate-aborted", (payload) => {
+      if (payload?.roomId && payload.roomId !== roomIdRef.current) {
+        return;
+      }
+      console.log("Debate aborted:", payload);
+      setDebateActive(false);
+      setCurrentPhase(0);
+      setTimeRemaining(0);
+      setCurrentSpeaker(null);
+      setPhaseDescription("");
+      setCanSpeak(true);
+      readySentRef.current = false;
+    });
+
+    socket.on("force-hangup", (payload) => {
+      if (payload?.roomId && payload.roomId !== roomIdRef.current) {
+        return;
+      }
+      console.log("Force hangup received:", payload);
+      cleanupCall({ notifyServer: false, redirect: true, reason: payload?.reason });
+    });
+
     // Handle WebRTC signaling
     socket.on("webrtc-signal", (data) => {
+      if (data?.roomId && data.roomId !== roomIdRef.current) {
+        return;
+      }
       console.log("Received WebRTC signal:", data.type);
       if (!localStreamRef.current) {
         console.log("Local stream not ready yet; ignoring signal", data.type);
@@ -208,6 +287,8 @@ export default function DebatePage() {
       socket.off("phase-start");
       socket.off("time-update");
       socket.off("debate-finished");
+      socket.off("debate-aborted");
+      socket.off("force-hangup");
       socket.off("webrtc-signal");
       
       // Cleanup audio analysis
@@ -223,7 +304,7 @@ export default function DebatePage() {
         localStreamRef.current = null;
       }
     };
-  }, []);
+  }, [roomId]);
 
   // Update canSpeak state when userPosition or currentSpeaker changes
   useEffect(() => {
@@ -360,12 +441,12 @@ export default function DebatePage() {
   useEffect(() => {
     if (localStreamRef.current && remoteUser && !readySentRef.current) {
       readySentRef.current = true;
-      console.log("Both users detected, sending WebRTC ready signal");
+      console.log("Both users detected, sending WebRTC ready signal for room", roomIdRef.current);
       setTimeout(() => {
-        socket.emit("webrtc-signal", { type: "ready" });
+        socket.emit("webrtc-signal", { type: "ready", roomId: roomIdRef.current });
       }, 500);
     }
-  }, [remoteUser]);
+  }, [remoteUser, roomId]);
 
   const startLocalStream = async (): Promise<MediaStream | undefined> => {
     if (localStreamRef.current) {
@@ -427,7 +508,6 @@ export default function DebatePage() {
     const stream = localStreamRef.current;
     if (stream) {
       const videoTrack = stream.getVideoTracks()[0];
-
       if (videoTrack) {
         videoTrack.enabled = !videoTrack.enabled;
         setIsVideoOn(videoTrack.enabled);
@@ -477,7 +557,66 @@ export default function DebatePage() {
     setCanSpeak(true);
     setRemoteVolume(0);
     readySentRef.current = false;
+    setUserPosition(null);
+    userPositionRef.current = null;
     closePeerConnection();
+  };
+
+  const cleanupCall = ({
+    notifyServer,
+    redirect,
+    reason,
+  }: {
+    notifyServer: boolean;
+    redirect: boolean;
+    reason?: string;
+  }) => {
+    console.log("Cleaning up call", { notifyServer, redirect, reason });
+    resetRemoteState();
+
+    try {
+      sessionStorage.removeItem('activeMatch');
+    } catch (err) {
+      console.warn('Unable to clear activeMatch from sessionStorage', err);
+    }
+
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach((track: MediaStreamTrack) => track.stop());
+      localStreamRef.current = null;
+    }
+    if (localVideoRef.current) {
+      localVideoRef.current.srcObject = null;
+    }
+
+    setLocalStream(null);
+    setLocalVolume(0);
+    readySentRef.current = false;
+    userPositionRef.current = null;
+    setIsAudioOn(true);
+    setIsVideoOn(true);
+    setIsCallActive(false);
+
+    if (startButtonRef.current) {
+      startButtonRef.current.disabled = false;
+    }
+    if (hangupButtonRef.current) {
+      hangupButtonRef.current.disabled = true;
+    }
+    if (videoButtonRef.current) {
+      videoButtonRef.current.disabled = true;
+    }
+    if (timeButtonRef.current) {
+      timeButtonRef.current.disabled = true;
+    }
+
+    if (notifyServer) {
+      socket.emit("webrtc-signal", { type: "bye", roomId: roomIdRef.current });
+      socket.emit("leave-debate", { roomId: roomIdRef.current });
+    }
+
+    if (redirect) {
+      router.push('/');
+    }
   };
 
   const makeCall = async (): Promise<void> => {
@@ -505,7 +644,7 @@ export default function DebatePage() {
           sdpMLineIndex: e.candidate?.sdpMLineIndex || null,
         };
         console.log("Sending ICE candidate");
-        socket.emit("webrtc-signal", data);
+        socket.emit("webrtc-signal", { ...data, roomId: roomIdRef.current });
       };
       
       newPc.ontrack = (e: RTCTrackEvent) => {
@@ -522,7 +661,7 @@ export default function DebatePage() {
 
       console.log("Creating and sending offer");
       const offer = await newPc.createOffer();
-      socket.emit("webrtc-signal", { type: "offer", sdp: offer.sdp });
+      socket.emit("webrtc-signal", { type: "offer", sdp: offer.sdp, roomId: roomIdRef.current });
       await newPc.setLocalDescription(offer);
     } catch (e) {
       console.error("Error in makeCall:", e);
@@ -554,7 +693,7 @@ export default function DebatePage() {
           sdpMLineIndex: e.candidate?.sdpMLineIndex || null,
         };
         console.log("Sending ICE candidate from answer side");
-        socket.emit("webrtc-signal", data);
+        socket.emit("webrtc-signal", { ...data, roomId: roomIdRef.current });
       };
       
       newPc.ontrack = (e: RTCTrackEvent) => {
@@ -572,7 +711,7 @@ export default function DebatePage() {
       console.log("Setting remote description and creating answer");
       await newPc.setRemoteDescription({ type: "offer", sdp: offer.sdp || "" });
       const answer = await newPc.createAnswer();
-      socket.emit("webrtc-signal", { type: "answer", sdp: answer.sdp });
+      socket.emit("webrtc-signal", { type: "answer", sdp: answer.sdp, roomId: roomIdRef.current });
       await newPc.setLocalDescription(answer);
     } catch (e) {
       console.error("Error in handleOffer:", e);
@@ -615,39 +754,7 @@ export default function DebatePage() {
   };
 
   const hangup = (): void => {
-    resetRemoteState();
-
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach((track: MediaStreamTrack) => track.stop());
-      localStreamRef.current = null;
-    }
-    if (localVideoRef.current) {
-      localVideoRef.current.srcObject = null;
-    }
-
-    setLocalStream(null);
-    setLocalVolume(0);
-    readySentRef.current = false;
-    userPositionRef.current = null;
-    setIsAudioOn(true);
-    setIsVideoOn(true);
-    setIsCallActive(false);
-
-    if (startButtonRef.current) {
-      startButtonRef.current.disabled = false;
-    }
-    if (hangupButtonRef.current) {
-      hangupButtonRef.current.disabled = true;
-    }
-    if (videoButtonRef.current) {
-      videoButtonRef.current.disabled = true;
-    }
-    if (timeButtonRef.current) {
-      timeButtonRef.current.disabled = true;
-    }
-
-    socket.emit("webrtc-signal", { type: "bye" });
-    router.push('/');
+    cleanupCall({ notifyServer: true, redirect: true, reason: "local-hangup" });
   };
 
   return (

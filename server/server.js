@@ -278,6 +278,7 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const http = require("http");
+const { randomUUID } = require("crypto");
 const { Server } = require("socket.io");
 
 const app = express();
@@ -302,18 +303,85 @@ const DEBATE_PHASES = [
   { phase: 6, duration: 60,  speaker: "user2", description: "Closing statement - User 2" }
 ];
 
-// Global debate state for a single 1v1 room ("debate")
-let debateState = {
-  active: false,
-  currentPhaseIndex: 0, // 0-based index into DEBATE_PHASES
-  timeRemaining: 0,
-  currentSpeaker: null,
-  participants: {
-    // user1: { socketId, name, affiliation }
-    // user2: { socketId, name, affiliation }
-  },
-  timer: null
-};
+// Rooms keyed by roomId -> per-room debate state
+const rooms = new Map();
+const waitingQueue = [];
+
+function createRoomState(roomId) {
+  return {
+    id: roomId,
+    active: false,
+    currentPhaseIndex: 0,
+    timeRemaining: 0,
+    currentSpeaker: null,
+    participants: {},
+    timer: null
+  };
+}
+
+function getRoom(roomId = "default") {
+  const key = roomId || "default";
+  if (!rooms.has(key)) {
+    rooms.set(key, createRoomState(key));
+  }
+  return rooms.get(key);
+}
+
+function debateRoomChannel(roomId) {
+  return `debate:${roomId}`;
+}
+
+function generateRoomId() {
+  if (typeof randomUUID === "function") {
+    return randomUUID();
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function occupiedSlots(room) {
+  return ["user1", "user2"].filter((pos) => Boolean(room.participants[pos]));
+}
+
+function findParticipantSlot(room, socketId) {
+  for (const pos of ["user1", "user2"]) {
+    if (room.participants[pos]?.socketId === socketId) {
+      return pos;
+    }
+  }
+  return null;
+}
+
+function hasDistinctParticipants(room) {
+  const slots = occupiedSlots(room);
+  if (slots.length < 2) return false;
+  const [first, second] = slots;
+  return (
+    room.participants[first]?.socketId &&
+    room.participants[second]?.socketId &&
+    room.participants[first].socketId !== room.participants[second].socketId
+  );
+}
+
+function serializeParticipants(room) {
+  const result = {};
+  for (const pos of ["user1", "user2"]) {
+    if (room.participants[pos]) {
+      const { name, affiliation } = room.participants[pos];
+      result[pos] = { name, affiliation };
+    }
+  }
+  return result;
+}
+
+function getOtherParticipantSocketId(room, senderSocketId) {
+  for (const pos of ["user1", "user2"]) {
+    const participant = room.participants[pos];
+    if (participant && participant.socketId !== senderSocketId) {
+      return participant.socketId;
+    }
+  }
+  return null;
+}
 
 // Track all connected users (for "Active Users" list on the homepage)
 const connectedUsers = new Map(); // socketId -> { name, affiliation, socketId, connectedAt }
@@ -332,11 +400,22 @@ app.get("/api/active-users", (_req, res) => {
     connectedAt: u.connectedAt
   }));
 
+  const roomSummaries = Array.from(rooms.values()).map(room => ({
+    roomId: room.id,
+    active: room.active,
+    participantCount: occupiedSlots(room).length
+  }));
+  const totalParticipants = roomSummaries.reduce((acc, room) => acc + room.participantCount, 0);
+  const activeRooms = roomSummaries.filter(room => room.active).length;
+
   res.json({
     users,
     totalUsers: users.length,
-    debateParticipants: Object.keys(debateState.participants).length,
-    debateActive: debateState.active
+    debateParticipants: totalParticipants,
+    debateActive: activeRooms > 0,
+    activeRooms,
+    rooms: roomSummaries,
+    waitingCount: waitingQueue.length
   });
 });
 
@@ -357,117 +436,165 @@ const io = new Server(server, {
   }
 });
 
-// Helper: emit users-update consistently (always include debateActive)
+// Helper: emit users-update consistently (include room summaries)
 function emitUsersUpdate() {
+  const roomSummaries = Array.from(rooms.values())
+    .filter(room => room.active || occupiedSlots(room).length > 0)
+    .map(room => ({
+      roomId: room.id,
+      active: room.active,
+      participantCount: occupiedSlots(room).length
+    }));
+  const debateParticipants = roomSummaries.reduce((acc, room) => acc + room.participantCount, 0);
+  const activeRooms = roomSummaries.filter(room => room.active).length;
+
   io.emit("users-update", {
     connectedUsers: Array.from(connectedUsers.values()),
-    debateParticipants: Object.keys(debateState.participants).length,
-    debateActive: debateState.active
+    debateParticipants,
+    debateActive: activeRooms > 0,
+    activeRooms,
+    rooms: roomSummaries,
+    waitingCount: waitingQueue.length
   });
 }
 
-// Helper: get the "other" participant socketId (if present)
-function getOtherParticipantSocketId(senderSocketId) {
-  const { participants } = debateState;
-  for (const pos of ["user1", "user2"]) {
-    if (participants[pos] && participants[pos].socketId !== senderSocketId) {
-      return participants[pos].socketId;
-    }
+function removeFromWaitingQueue(socketId) {
+  const index = waitingQueue.findIndex(entry => entry.socketId === socketId);
+  if (index !== -1) {
+    waitingQueue.splice(index, 1);
+    return true;
   }
-  return null;
+  return false;
 }
 
-function findParticipantSlotBySocket(socketId) {
-  for (const pos of ["user1", "user2"]) {
-    if (debateState.participants[pos]?.socketId === socketId) {
-      return pos;
-    }
+function resetRoomState(room, { clearParticipants = false } = {}) {
+  if (!room) return;
+
+  if (room.timer) {
+    clearInterval(room.timer);
+    room.timer = null;
   }
-  return null;
+
+  room.active = false;
+  room.currentPhaseIndex = 0;
+  room.timeRemaining = 0;
+  room.currentSpeaker = null;
+
+  if (clearParticipants) {
+    room.participants = {};
+  }
 }
 
-function occupiedSlots() {
-  return ["user1", "user2"].filter((pos) => Boolean(debateState.participants[pos]));
+function stopDebateTimer(room, reason = "stopped") {
+  if (!room) return;
+
+  const wasActive = room.active;
+  if (room.timer) {
+    clearInterval(room.timer);
+    room.timer = null;
+  }
+
+  resetRoomState(room);
+
+  if (wasActive) {
+    console.log(`[Debate:${room.id}] Timer stopped (${reason})`);
+    io.to(debateRoomChannel(room.id)).emit("debate-aborted", { roomId: room.id, reason });
+  }
 }
 
-function hasDistinctParticipants() {
-  const slots = occupiedSlots();
-  if (slots.length < 2) return false;
-  const [first, second] = slots;
-  return (
-    debateState.participants[first]?.socketId &&
-    debateState.participants[second]?.socketId &&
-    debateState.participants[first].socketId !== debateState.participants[second].socketId
-  );
+function endDebateForAll(room, reason, excludeSocketId = null) {
+  if (!room) return;
+
+  const channel = debateRoomChannel(room.id);
+  const participants = occupiedSlots(room)
+    .map(pos => room.participants[pos])
+    .filter(Boolean);
+
+  stopDebateTimer(room, reason);
+
+  participants.forEach((participant) => {
+    const targetId = participant.socketId;
+    const socketInstance = io.sockets.sockets.get(targetId);
+    if (socketInstance) {
+      socketInstance.leave(channel);
+      if (socketInstance.currentRoomId === room.id) {
+        socketInstance.currentRoomId = null;
+      }
+    }
+    if (targetId !== excludeSocketId) {
+      io.to(targetId).emit("force-hangup", { roomId: room.id, reason });
+    }
+  });
+
+  resetRoomState(room, { clearParticipants: true });
+  rooms.delete(room.id);
+  emitUsersUpdate();
 }
 
-function resetDebateState() {
-  console.log("[Debate] Resetting debate state");
-  if (debateState.timer) clearInterval(debateState.timer);
+function startPhase(room) {
+  if (!room || !rooms.has(room.id)) return;
 
-  debateState = {
-    active: false,
-    currentPhaseIndex: 0,
-    timeRemaining: 0,
-    currentSpeaker: null,
-    participants: {},
-    timer: null
-  };
-}
+  const channel = debateRoomChannel(room.id);
 
-function startPhase() {
-  if (debateState.currentPhaseIndex >= DEBATE_PHASES.length) {
-    console.log("[Debate] Finished");
-    io.to("debate").emit("debate-finished");
-    resetDebateState();
+  if (room.currentPhaseIndex >= DEBATE_PHASES.length) {
+    console.log(`[Debate:${room.id}] Finished`);
+    io.to(channel).emit("debate-finished", { roomId: room.id });
+    resetRoomState(room);
     emitUsersUpdate();
     return;
   }
 
-  const currentPhase = DEBATE_PHASES[debateState.currentPhaseIndex];
-  debateState.timeRemaining = currentPhase.duration;
-  debateState.currentSpeaker = currentPhase.speaker;
+  const currentPhase = DEBATE_PHASES[room.currentPhaseIndex];
+  room.timeRemaining = currentPhase.duration;
+  room.currentSpeaker = currentPhase.speaker;
 
-  console.log(`[Debate] Starting phase ${currentPhase.phase}: ${currentPhase.description}`);
+  console.log(`[Debate:${room.id}] Starting phase ${currentPhase.phase}: ${currentPhase.description}`);
 
-  io.to("debate").emit("phase-start", {
-    phase: currentPhase.phase,            // keep 1..6 for UI
+  io.to(channel).emit("phase-start", {
+    roomId: room.id,
+    phase: currentPhase.phase,
     duration: currentPhase.duration,
-    speaker: currentPhase.speaker,        // "user1" / "user2"
+    speaker: currentPhase.speaker,
     description: currentPhase.description
   });
 
   // Countdown
-  debateState.timer = setInterval(() => {
-    debateState.timeRemaining -= 1;
-    io.to("debate").emit("time-update", { timeRemaining: debateState.timeRemaining });
+  room.timer = setInterval(() => {
+    room.timeRemaining -= 1;
+    io.to(channel).emit("time-update", { roomId: room.id, timeRemaining: room.timeRemaining });
 
-    if (debateState.timeRemaining <= 0) {
-      clearInterval(debateState.timer);
-      debateState.currentPhaseIndex += 1;
+    if (room.timeRemaining <= 0) {
+      if (room.timer) {
+        clearInterval(room.timer);
+        room.timer = null;
+      }
+      room.currentPhaseIndex += 1;
 
-      if (debateState.currentPhaseIndex >= DEBATE_PHASES.length) {
-        io.to("debate").emit("debate-finished");
-        resetDebateState();
+      if (room.currentPhaseIndex >= DEBATE_PHASES.length) {
+        io.to(channel).emit("debate-finished", { roomId: room.id });
+        resetRoomState(room);
         emitUsersUpdate();
         return;
       }
 
-      // Short pause between phases
-      setTimeout(startPhase, 1000);
+      // Start next phase after a brief pause
+      setTimeout(() => startPhase(room), 1000);
     }
   }, 1000);
 }
 
-function startDebateTimer() {
-  if (debateState.active) {
-    console.log("[Debate] Already active");
+function startDebateTimer(room) {
+  if (!room || !rooms.has(room.id)) return;
+  if (room.active) {
+    console.log(`[Debate:${room.id}] Already active`);
     return;
   }
-  console.log("[Debate] Starting debate");
-  debateState.active = true;
-  debateState.currentPhaseIndex = 0;
-  startPhase();
+
+  console.log(`[Debate:${room.id}] Starting debate`);
+  room.active = true;
+  room.currentPhaseIndex = 0;
+  startPhase(room);
+  emitUsersUpdate();
 }
 
 io.on("connection", (socket) => {
@@ -491,10 +618,75 @@ io.on("connection", (socket) => {
     }
   });
 
-  // --- DEBATE JOIN: debate page calls this with { name, affiliation } ---
-  socket.on("join-debate", (userData) => {
+  socket.on("join-matchmaking", (userData = {}) => {
+    const name = userData?.name || socket.userInfo?.name || "Anonymous";
+    const affiliation = userData?.affiliation || socket.userInfo?.affiliation || "Unknown";
+
+    // Remove stale entries referencing this socket
+    removeFromWaitingQueue(socket.id);
+
+    // Clean up queue from disconnected sockets
+    for (let i = waitingQueue.length - 1; i >= 0; i--) {
+      if (!io.sockets.sockets.has(waitingQueue[i].socketId)) {
+        waitingQueue.splice(i, 1);
+      }
+    }
+
+    while (waitingQueue.length > 0) {
+      const opponent = waitingQueue.shift();
+      if (opponent.socketId === socket.id) {
+        continue;
+      }
+      const opponentSocket = io.sockets.sockets.get(opponent.socketId);
+      if (!opponentSocket) {
+        continue;
+      }
+
+      const roomId = generateRoomId();
+      const room = getRoom(roomId);
+      resetRoomState(room, { clearParticipants: true });
+
+      console.log(`[Matchmaking] Matched ${opponent.name} with ${name} in room ${roomId}`);
+
+      io.to(opponent.socketId).emit("match-found", {
+        roomId,
+        position: "user1",
+        match: { name, affiliation }
+      });
+      io.to(opponent.socketId).emit("matchmaking-status", { status: "matched", roomId });
+
+      io.to(socket.id).emit("match-found", {
+        roomId,
+        position: "user2",
+        match: { name: opponent.name, affiliation: opponent.affiliation }
+      });
+      io.to(socket.id).emit("matchmaking-status", { status: "matched", roomId });
+
+      emitUsersUpdate();
+      return;
+    }
+
+    waitingQueue.push({ socketId: socket.id, name, affiliation });
+    console.log(`[Matchmaking] ${name} queued for a match`);
+    socket.emit("matchmaking-status", { status: "waiting" });
+    emitUsersUpdate();
+  });
+
+  socket.on("cancel-matchmaking", () => {
+    if (removeFromWaitingQueue(socket.id)) {
+      console.log("[Matchmaking] User cancelled waiting", socket.id);
+      socket.emit("matchmaking-status", { status: "cancelled" });
+      emitUsersUpdate();
+    }
+  });
+
+  // --- DEBATE JOIN: debate page calls this with { name, affiliation, roomId } ---
+  socket.on("join-debate", (userData = {}) => {
     const name = userData?.name || "Anonymous";
     const affiliation = userData?.affiliation || "Unknown";
+    const requestedRoomId = (userData?.roomId ?? "default").toString().trim() || "default";
+    const room = getRoom(requestedRoomId);
+    const channel = debateRoomChannel(room.id);
 
     // Track in connectedUsers as well (so Active Users stays correct)
     socket.userInfo = {
@@ -505,47 +697,66 @@ io.on("connection", (socket) => {
     };
     connectedUsers.set(socket.id, socket.userInfo);
 
-    // Assign slot
-    const existingSlot = findParticipantSlotBySocket(socket.id);
+    // Leave previous room if socket was already in one
+    if (socket.currentRoomId && socket.currentRoomId !== room.id) {
+      const previousRoom = rooms.get(socket.currentRoomId);
+      if (previousRoom) {
+        const previousChannel = debateRoomChannel(previousRoom.id);
+        const previousSlot = findParticipantSlot(previousRoom, socket.id);
+        if (previousSlot) {
+          delete previousRoom.participants[previousSlot];
+          io.to(previousChannel).emit("user-left", { roomId: previousRoom.id, position: previousSlot });
+          socket.leave(previousChannel);
+          endDebateForAll(previousRoom, "participant-switched", socket.id);
+        } else {
+          socket.leave(previousChannel);
+        }
+      }
+      socket.currentRoomId = null;
+    }
+
+    const existingSlot = findParticipantSlot(room, socket.id);
     if (existingSlot) {
-      // Update metadata (name/affiliation could change) and confirm join
-      debateState.participants[existingSlot] = { socketId: socket.id, name, affiliation };
-      socket.join("debate");
-      console.log(`[Debate] ${name} rejoined as ${existingSlot} (same socket)`);
+      room.participants[existingSlot] = { socketId: socket.id, name, affiliation };
+      socket.join(channel);
+      socket.currentRoomId = room.id;
+      console.log(`[Debate:${room.id}] ${name} rejoined as ${existingSlot}`);
       socket.emit("joined-debate", {
+        roomId: room.id,
         position: existingSlot,
-        participants: debateState.participants,
-        debateActive: debateState.active
+        participants: serializeParticipants(room),
+        debateActive: room.active
       });
       emitUsersUpdate();
       return;
     }
 
-    const count = occupiedSlots().length;
+    const count = occupiedSlots(room).length;
     if (count >= 2) {
-      console.log("[Debate] Room full; rejecting", socket.id);
-      socket.emit("room-full");
+      console.log(`[Debate:${room.id}] Room full; rejecting ${socket.id}`);
+      socket.emit("room-full", { roomId: room.id });
       emitUsersUpdate();
       return;
     }
 
     const position = count === 0 ? "user1" : "user2";
-    debateState.participants[position] = { socketId: socket.id, name, affiliation };
+    room.participants[position] = { socketId: socket.id, name, affiliation };
 
-    socket.join("debate");
+    socket.join(channel);
+    socket.currentRoomId = room.id;
 
-    console.log(`[Debate] ${name} joined as ${position}`);
-    // Let the joiner know their position + current state
+    console.log(`[Debate:${room.id}] ${name} joined as ${position}`);
     socket.emit("joined-debate", {
+      roomId: room.id,
       position,
-      participants: debateState.participants,
-      debateActive: debateState.active
+      participants: serializeParticipants(room),
+      debateActive: room.active
     });
 
-    // Notify the other participant (if present)
-    const otherId = getOtherParticipantSocketId(socket.id);
+    const otherId = getOtherParticipantSocketId(room, socket.id);
     if (otherId) {
       io.to(otherId).emit("user-joined", {
+        roomId: room.id,
         user: { name, affiliation },
         position
       });
@@ -553,29 +764,67 @@ io.on("connection", (socket) => {
 
     emitUsersUpdate();
 
-    // Auto-start when both are present
-    if (hasDistinctParticipants() && !debateState.active) {
-      console.log("[Debate] Two participants ready, starting in 2s");
-      setTimeout(() => startDebateTimer(), 2000);
+    if (hasDistinctParticipants(room) && !room.active) {
+      console.log(`[Debate:${room.id}] Two participants ready, starting in 2s`);
+      setTimeout(() => {
+        if (rooms.has(room.id) && hasDistinctParticipants(room) && !room.active) {
+          startDebateTimer(room);
+        }
+      }, 2000);
     }
   });
 
   // Manual start (from UI button)
   socket.on("start-debate", () => {
-    if (hasDistinctParticipants() && !debateState.active) {
-      console.log("[Debate] Manual start");
-      startDebateTimer();
+    const roomId = socket.currentRoomId;
+    if (!roomId) return;
+
+    const room = rooms.get(roomId);
+    if (room && hasDistinctParticipants(room) && !room.active) {
+      console.log(`[Debate:${room.id}] Manual start`);
+      startDebateTimer(room);
     }
   });
 
   // --- WebRTC signaling: route only to the other participant ---
   socket.on("webrtc-signal", (data) => {
-    const otherId = getOtherParticipantSocketId(socket.id);
+    const roomId = socket.currentRoomId;
+    if (!roomId) {
+      console.log("[RTC] Signal received with no active room", data?.type);
+      return;
+    }
+
+    const room = rooms.get(roomId);
+    if (!room) {
+      console.log("[RTC] Room not found for signal", roomId);
+      return;
+    }
+
+    const otherId = getOtherParticipantSocketId(room, socket.id);
     if (otherId) {
-      io.to(otherId).emit("webrtc-signal", { ...data, from: socket.id });
+      io.to(otherId).emit("webrtc-signal", { ...data, from: socket.id, roomId });
     } else {
       // Fallback: if no other participant, ignore; avoids spamming everyone
       console.log("[RTC] No other participant to route signal to");
+    }
+  });
+
+  socket.on("leave-debate", (payload = {}) => {
+    console.log("[Debate] Leave request from", socket.id);
+    const roomId = payload?.roomId || socket.currentRoomId;
+    if (!roomId) return;
+
+    const room = rooms.get(roomId);
+    if (!room) return;
+
+    const position = findParticipantSlot(room, socket.id);
+    if (position) {
+      delete room.participants[position];
+      socket.leave(debateRoomChannel(room.id));
+      socket.currentRoomId = null;
+      io.to(debateRoomChannel(room.id)).emit("user-left", { roomId: room.id, position });
+
+      endDebateForAll(room, "participant-left", socket.id);
     }
   });
 
@@ -585,19 +834,27 @@ io.on("connection", (socket) => {
     // Remove from connected users
     connectedUsers.delete(socket.id);
 
-    // Remove from debate participants (if present)
-    for (const pos of ["user1", "user2"]) {
-      if (debateState.participants[pos]?.socketId === socket.id) {
-        const removedName = debateState.participants[pos].name;
-        delete debateState.participants[pos];
-        console.log(`[Debate] Removed ${removedName} from ${pos}`);
-        socket.broadcast.to("debate").emit("user-left", { position: pos });
-      }
+    const removedFromQueue = removeFromWaitingQueue(socket.id);
+    if (removedFromQueue) {
+      console.log(`[Matchmaking] Removed ${socket.id} from waiting queue (disconnect)`);
     }
 
-    // If room is empty, reset debate
-    if (Object.keys(debateState.participants).length === 0) {
-      resetDebateState();
+    // Remove from debate participants (if present)
+    const roomId = socket.currentRoomId;
+    if (roomId) {
+      const room = rooms.get(roomId);
+      if (room) {
+        const position = findParticipantSlot(room, socket.id);
+        if (position) {
+          const removedName = room.participants[position].name;
+          delete room.participants[position];
+          console.log(`[Debate:${room.id}] Removed ${removedName} from ${position}`);
+          socket.broadcast.to(debateRoomChannel(room.id)).emit("user-left", { roomId: room.id, position });
+          socket.currentRoomId = null;
+          endDebateForAll(room, "participant-disconnected", socket.id);
+          return;
+        }
+      }
     }
 
     emitUsersUpdate();
