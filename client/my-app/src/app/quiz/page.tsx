@@ -1,6 +1,6 @@
 "use client";
 
-import { useSearchParams } from 'next/navigation';
+import useStore from '@/store/useStore';
 import { supabase } from '../../utils/supabaseClient';
 
 import { useState, useEffect } from 'react';
@@ -19,31 +19,27 @@ export default function QuizPage() {
   const [isLoading, setIsLoading] = useState(true);
   const router = useRouter();
 
-  const searchParams = useSearchParams();
-  const userId = searchParams.get('id');
-
+  const userId = useStore((state) => state.userId);
+  const userDataStore = useStore((state) => state.userData);
+  const setUserDataStore = useStore((state) => state.setUserData);
 
   // Check if user is signed up and hasn't completed quiz
   useEffect(() => {
-    const storedUserData = localStorage.getItem('userData');
-    if (!storedUserData) {
-      // No user data, redirect to signup
+    // Redirect to signup if no userId
+    if (!userId) {
       router.push('/signup');
       return;
     }
-
-    const parsedUserData = JSON.parse(storedUserData);
-    setUserData(parsedUserData);
-
-    // Check if quiz is already completed
-    if (parsedUserData.quizCompleted) {
-      // Quiz already completed, redirect to home
-      router.push('/');
-      return;
+    // Use Zustand userData if available
+    if (userDataStore) {
+      setUserData(userDataStore);
+      if (userDataStore.quizCompleted) {
+        router.push('/');
+        return;
+      }
     }
-
     setIsLoading(false);
-  }, [router]);
+  }, [router, userId, userDataStore]);
 
   // Filter questions based on previous answers (conditional logic)
   const getAvailableQuestions = () => {
@@ -132,49 +128,54 @@ export default function QuizPage() {
   };
 
   const handleFinish = async () => {
-    // Mark quiz as completed in user data
-    const updatedUserData = {
-      ...userData,
-      quizCompleted: true,
-      quizResults: {
-        answers,
-        spectrum,
-        completedAt: new Date().toISOString()
-      }
-    };
-    
-    // localStorage is NO LONGER
-    // localStorage.setItem('userData', JSON.stringify(updatedUserData));
-    
     // Save results to Supabase if userId is present
     if (userId && spectrum) {
       // 1. Update overall_affiliation in public.profiles
-      await supabase
+      const { error: profileError } = await supabase
         .from('profiles')
-        .update({ overall_affiliation: spectrum.overall })
+        .update({ overall_affiliation: Math.round(spectrum.overall)})
         .eq('id', userId);
+      if (profileError) {
+        alert('Error updating overall affiliation: ' + profileError.message);
+        return;
+      }
 
-      // 2. Upsert individual category affiliations in public.political_spectrum
-      const spectrumPayload = [
-        { user_id: userId, category: 'economic', value: spectrum.economic },
-        { user_id: userId, category: 'social', value: spectrum.social },
-        { user_id: userId, category: 'foreignPolicy', value: spectrum.foreignPolicy },
-        { user_id: userId, category: 'governance', value: spectrum.governance },
-        { user_id: userId, category: 'cultural', value: spectrum.cultural }
-      ];
-      await supabase
+      // 2. Upsert the user's political spectrum in public.political_spectrum
+      const { error: spectrumError } = await supabase
         .from('political_spectrum')
-        .upsert(spectrumPayload, { onConflict: 'user_id,category' });
+        .upsert([
+          {
+            id: userId,
+            economic: Math.round(spectrum.economic),
+            social: Math.round(spectrum.social),
+            foreign_policy: Math.round(spectrum.foreignPolicy),
+            governance: Math.round(spectrum.governance),
+            cultural: Math.round(spectrum.cultural)
+          }
+        ]);
+      if (spectrumError) {
+        alert('Error saving political spectrum: ' + spectrumError.message);
+        return;
+      }
+
+      // 3. Update Zustand userData
+      setUserDataStore({
+        ...userData,
+        quizCompleted: true,
+        quizResults: {
+          answers,
+          spectrum,
+          completedAt: new Date().toISOString()
+        },
+        overall_affiliation: Math.round(spectrum.overall)
+      });
     }
 
-    // Redirect to home page
+    // Redirect to account page
     router.push('/');
   };
 
-  const handleStartDebate = () => {
-    // TODO: Implement debate matching logic
-    router.push('/debate');
-  };
+  
 
   const handleRetakeQuiz = () => {
     setCurrentQuestionIndex(0);
