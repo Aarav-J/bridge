@@ -42,13 +42,14 @@ export default function AccountPage() {
     };
   }, [userId, setUserData]);
 
-  const getPoliticalColor = (score: number) => {
-    if (score < -30) return "text-blue-400";
-    if (score < -10) return "text-blue-300";
-    if (score < 10) return "text-gray-300";
-    if (score < 30) return "text-red-300";
-    return "text-red-400";
-  };
+  // Returns a background color class for the bar
+  const getPoliticalBgColor = (score: number) => {
+    if (score < -30) return "bg-blue-500";
+    if (score < -10) return "bg-blue-400";
+    if (score < 10) return "bg-gray-400";
+    if (score < 30) return "bg-red-400";
+    return "bg-red-500";
+  }
 
   // Calculate overall political position
   const calculateOverallPosition = () => {
@@ -152,13 +153,16 @@ export default function AccountPage() {
               <div className="w-20 h-20 bg-white bg-opacity-20 rounded-full flex items-center justify-center mr-6">
                 <span className="text-black text-2xl font-bold">{initials}</span>
               </div>
-              <div>
+              <div className="flex-1">
                 <h1 className="text-3xl font-bold text-white">{userData.fullName}</h1>
                 <p className="text-blue-100 text-lg">{userData.email}</p>
-                <div className="mt-2">
-                  <span className="inline-block bg-white bg-opacity-20 text-black text-sm px-3 py-1 rounded-full">
-                    {userData.overall_affiliation || 'No Affiliation'}
-                  </span>
+                <div className="mt-4 flex justify-start">
+                  {/* Political Leaning Bar - 50% width, solid color, centered text, no wrapping */}
+                  <div className={`h-8 rounded-full flex items-center justify-center ${getPoliticalBgColor(overallPosition)}`} style={{ width: '50%' }}>
+                    <span className="w-full text-center font-semibold text-white text-base whitespace-nowrap overflow-hidden">
+                      Political Leaning: {overallPosition > 0 ? '+' : ''}{overallPosition.toFixed(0)} ({getPoliticalLabel(overallPosition)})
+                    </span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -167,7 +171,7 @@ export default function AccountPage() {
           {/* Account Details */}
           <div className="p-8">
             {/* Basic Information */}
-            <div className="max-w-2xl">
+            <div>
               <div className="flex items-center justify-between mb-6">
                 <h2 className="text-xl font-semibold text-white">Basic Information</h2>
               </div>
@@ -218,49 +222,36 @@ export default function AccountPage() {
                     <div className="w-full h-8 bg-gradient-to-r from-blue-500 via-gray-400 to-red-500 rounded-full relative overflow-hidden">
                       {/* Center line */}
                       <div className="absolute left-1/2 top-0 w-0.5 h-full bg-white transform -translate-x-1/2"></div>
-                      
-                      {/* User position indicator */}
-                      <div 
-                        className="absolute top-1/2 transform -translate-y-1/2 w-4 h-4 bg-white rounded-full border-2 border-gray-800 shadow-lg"
-                        style={{ 
-                          left: `${((overallPosition + 50) / 100) * 100}%`,
-                          transform: 'translate(-50%, -50%)'
-                        }}
-                      >
-                        <div className="w-full h-full bg-white rounded-full flex items-center justify-center">
-                          <div className="w-2 h-2 bg-gray-800 rounded-full"></div>
-                        </div>
-                      </div>
+                      {/* User position indicator and label */}
+                      {(() => {
+                        const dotLeft = ((overallPosition + 50) / 100) * 100;
+                        return (
+                          <div
+                            className="absolute left-0 w-4 h-4 bg-white rounded-full border-2 border-gray-800 shadow-lg flex items-center justify-center z-10"
+                            style={{
+                              left: `${dotLeft}%`,
+                              top: '50%',
+                              transform: 'translate(-50%, -50%)',
+                            }}
+                          >
+                            <div className="w-2 h-2 bg-gray-800 rounded-full"></div>
+                          </div>
+                        );
+                      })()}
                     </div>
-                    
-                    {/* Labels */}
-                    <div className="flex justify-between mt-3 text-sm">
-                      <div className="text-center">
+                    {/* Labels - edge labels flush left/right, center label centered */}
+                    <div className="flex justify-between mt-3 text-sm w-full">
+                      <div className="text-left">
                         <div className="text-blue-400 font-medium">Liberal</div>
                         <div className="text-gray-500 text-xs">-50</div>
                       </div>
-                      <div className="text-center">
+                      <div className="text-center w-1/3 mx-auto pl-8">
                         <div className="text-gray-300 font-medium">Moderate</div>
                         <div className="text-gray-500 text-xs">0</div>
                       </div>
-                      <div className="text-center">
+                      <div className="text-right">
                         <div className="text-red-400 font-medium">Conservative</div>
                         <div className="text-gray-500 text-xs">+50</div>
-                      </div>
-                    </div>
-                  </div>
-                  
-                  {/* Position Details */}
-                  <div className="mt-6 text-center">
-                    <div className="inline-block bg-gray-600 rounded-lg px-4 py-2">
-                      <div className="text-white font-medium">
-                        Your Position: {overallPosition > 0 ? '+' : ''}{overallPosition.toFixed(1)}
-                      </div>
-                      <div className={`text-sm font-medium ${
-                        overallPosition < -10 ? 'text-blue-400' :
-                        overallPosition < 10 ? 'text-gray-300' : 'text-red-400'
-                      }`}>
-                        {getPoliticalLabel(overallPosition)}
                       </div>
                     </div>
                   </div>
@@ -284,7 +275,7 @@ export default function AccountPage() {
                       <div className="w-full bg-gray-600 rounded-full h-2">
                         <div 
                           className={`h-2 rounded-full ${score < 0 ? 'bg-blue-500' : 'bg-red-500'}`}
-                          style={{ width: `${Math.abs(score)}%` }}
+                          style={{ width: `${Math.min(Math.abs(score) / 50 * 100, 100)}%` }}
                         ></div>
                       </div>
                       <p className={`text-xs mt-1 text-gray-200`}>
