@@ -80,7 +80,7 @@ app.post('/facts', async (req, res) => {
           content: prompt
         }
       ],
-      temperature: 0.4,
+      temperature: 0.0,
       max_tokens: 1500
     });
 
