@@ -426,7 +426,7 @@ export default function HomePage() {
         </div>
 
         {/* Active Users Section */}
-        <div className="mt-12 max-w-6xl mx-auto">
+        {/* <div className="mt-12 max-w-6xl mx-auto">
           <div className="bg-gray-800 rounded-lg p-6 shadow-xl">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-xl font-semibold text-white flex items-center">
@@ -496,7 +496,7 @@ export default function HomePage() {
               </div>
             )}
           </div>
-        </div>
+        </div> */}
       </div>
     </div>
   );

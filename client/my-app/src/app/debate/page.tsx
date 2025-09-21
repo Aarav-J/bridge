@@ -36,6 +36,13 @@ interface UserInfo {
   spectrum?: PoliticalSpectrumScores | null;
 }
 
+type DebateFact = {
+  fact: string;
+  source?: string;
+  reliability?: string;
+  context?: string;
+};
+
 const SOCKET_URL = process.env.NEXT_PUBLIC_SOCKET_URL?.trim() || "http://localhost:3000";
 
 const createDefaultUser = (): UserInfo => ({
@@ -46,21 +53,52 @@ const createDefaultUser = (): UserInfo => ({
   spectrum: null
 });
 
-const parseUserInfo = (data: any): UserInfo | null => {
-  if (!data) {
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+const isSpectrum = (value: unknown): value is PoliticalSpectrumScores => {
+  if (!isPlainObject(value)) {
+    return false;
+  }
+  const keys: (keyof PoliticalSpectrumScores)[] = [
+    "economic",
+    "social",
+    "foreignPolicy",
+    "governance",
+    "cultural"
+  ];
+
+  return keys.every((key) => typeof value[key] === "number");
+};
+
+const isDebateFact = (value: unknown): value is DebateFact =>
+  isPlainObject(value) && typeof value.fact === "string";
+
+const parseUserInfo = (data: unknown): UserInfo | null => {
+  if (!isPlainObject(data)) {
     return null;
   }
 
+  const record = data as Record<string, unknown>;
+  const name = typeof record.name === "string" && record.name.trim() ? record.name : "Anonymous";
+  const affiliation = typeof record.affiliation === "string" && record.affiliation.trim()
+    ? record.affiliation
+    : "Unknown";
+  const username = typeof record.username === "string" && record.username.trim() ? record.username : null;
+  const politicalScore = typeof record.politicalScore === "number" ? record.politicalScore : null;
+  const spectrumCandidate = record.spectrum;
+  const spectrum = isSpectrum(spectrumCandidate) ? spectrumCandidate : null;
+
   return {
-    name: data.name ?? "Anonymous",
-    affiliation: data.affiliation ?? "Unknown",
-    username: data.username ?? null,
-    politicalScore: typeof data.politicalScore === "number" ? data.politicalScore : null,
-    spectrum: data.spectrum ?? null
+    name,
+    affiliation,
+    username,
+    politicalScore,
+    spectrum
   };
 };
 
-const ensureUserInfo = (data: any): UserInfo => parseUserInfo(data) ?? createDefaultUser();
+const ensureUserInfo = (data: unknown): UserInfo => parseUserInfo(data) ?? createDefaultUser();
 
 const formatUserLabel = (user: UserInfo | null, fallback = ""): string => {
   if (!user) {
@@ -113,7 +151,7 @@ export default function DebatePage() {
   const [userPosition, setUserPosition] = useState<string | null>(null); // "user1" or "user2"
   const [debateTopic, setDebateTopic] = useState<string | null>(null);
   const [debateQuestion, setDebateQuestion] = useState<string | null>(null);
-  const [factData, setFactData] = useState<{ facts: Array<{ fact: string; source?: string; reliability?: string; context?: string }>; topic: string | null; last_updated?: string } | null>(null);
+  const [factData, setFactData] = useState<{ facts: DebateFact[]; topic: string | null; last_updated?: string } | null>(null);
   const [factStatus, setFactStatus] = useState<"idle" | "loading" | "error" | "success">("idle");
   
   // Debate timer states
@@ -123,7 +161,6 @@ export default function DebatePage() {
   const [currentSpeaker, setCurrentSpeaker] = useState<string | null>(null);
   const [phaseDescription, setPhaseDescription] = useState("");
   const [canSpeak, setCanSpeak] = useState(true);
-  const [isAudioOn, setIsAudioOn] = useState(true);
   
   // Audio volume states
   const [localVolume, setLocalVolume] = useState(0);
@@ -131,6 +168,9 @@ export default function DebatePage() {
   const audioContextRef = useRef<AudioContext | null>(null);
   const localAnalyserRef = useRef<AnalyserNode | null>(null);
   const remoteAnalyserRef = useRef<AnalyserNode | null>(null);
+  const localSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const remoteSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const remoteStreamRef = useRef<MediaStream | null>(null);
   const animationFrameRef = useRef<number | null>(null);
   
   const router = useRouter();
@@ -138,7 +178,7 @@ export default function DebatePage() {
   const roomId = useMemo(() => searchParams.get("room")?.trim() || "default", [searchParams]);
   const roomIdRef = useRef(roomId);
 
-  const persistFactsToSession = (facts: any[], lastUpdated?: string, topicOverride?: string | null) => {
+  const persistFactsToSession = (facts: DebateFact[], lastUpdated?: string, topicOverride?: string | null) => {
     try {
       const stored = sessionStorage.getItem('activeMatch');
       if (!stored) return;
@@ -256,7 +296,9 @@ export default function DebatePage() {
         const result = await factCall({ question: debateQuestion });
         if (controller.signal.aborted) return;
 
-        const factsArray = Array.isArray(result?.facts) ? result.facts : [];
+        const factsArray: DebateFact[] = Array.isArray(result?.facts)
+          ? result.facts.filter(isDebateFact)
+          : [];
         const data = {
           facts: factsArray,
           topic: result?.topic ?? debateTopic ?? debateQuestion,
@@ -567,7 +609,6 @@ export default function DebatePage() {
       console.log(`Audio track ${track.id} enabled: ${track.enabled}`);
     });
 
-    setIsAudioOn(prev => (prev !== shouldEnableAudio ? shouldEnableAudio : prev));
   }, [canSpeak, localStream, debateActive, isVideoOn]);
 
   // Debug logging for UI state
@@ -581,42 +622,75 @@ export default function DebatePage() {
   }, [localUser, remoteUser, userPosition, debateActive]);
 
   // Audio volume analysis functions
-  const analyzeAudio = (analyser: AnalyserNode, setVolume: (volume: number) => void) => {
-    const bufferLength = analyser.frequencyBinCount;
-    const dataArray = new Uint8Array(bufferLength);
-    
-    const getVolume = () => {
-      analyser.getByteFrequencyData(dataArray);
-      
-      let sum = 0;
+  const createVolumeReader = (analyser: AnalyserNode, setVolume: (volume: number) => void) => {
+    const bufferLength = analyser.fftSize;
+    const dataArray = new Float32Array(bufferLength);
+    const minDb = -60;
+    const maxDb = 0;
+
+    return () => {
+      analyser.getFloatTimeDomainData(dataArray);
+
+      let sumSquares = 0;
       for (let i = 0; i < bufferLength; i++) {
-        sum += dataArray[i];
+        const sample = dataArray[i];
+        sumSquares += sample * sample;
       }
-      
-      const average = sum / bufferLength;
-      const volume = Math.round((average / 255) * 100); // Convert to percentage
-      setVolume(volume);
+
+      const rms = Math.sqrt(sumSquares / bufferLength) || 1e-8;
+      const db = 20 * Math.log10(rms);
+      const clampedDb = Math.min(maxDb, Math.max(minDb, db));
+
+      setVolume(clampedDb);
     };
-    
-    return getVolume;
   };
 
-  const handleGetFacts = async () => { 
-    const facts = await factCall({ question: debateQuestion || "General Politics" });
-    console.log(facts); 
-  }
-  const startVolumeAnalysis = () => {
+  const ensureAudioContext = () => {
     if (!audioContextRef.current) {
-      audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const contextCtor =
+        typeof window !== "undefined"
+          ? window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+          : undefined;
+
+      if (contextCtor) {
+        audioContextRef.current = new contextCtor();
+      }
+    }
+
+    return audioContextRef.current;
+  };
+
+  const stopVolumeAnalysis = () => {
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    }
+  };
+
+  const startVolumeAnalysis = () => {
+    if (!ensureAudioContext()) {
+      return;
+    }
+
+    stopVolumeAnalysis();
+
+    const readers: Array<() => void> = [];
+
+    if (localAnalyserRef.current) {
+      readers.push(createVolumeReader(localAnalyserRef.current, setLocalVolume));
+    }
+    if (remoteAnalyserRef.current) {
+      readers.push(createVolumeReader(remoteAnalyserRef.current, setRemoteVolume));
+    }
+
+    if (readers.length === 0) {
+      setLocalVolume(-60);
+      setRemoteVolume(-60);
+      return;
     }
 
     const analyzeLoop = () => {
-      if (localAnalyserRef.current) {
-        analyzeAudio(localAnalyserRef.current, setLocalVolume)();
-      }
-      if (remoteAnalyserRef.current) {
-        analyzeAudio(remoteAnalyserRef.current, setRemoteVolume)();
-      }
+      readers.forEach((reader) => reader());
       animationFrameRef.current = requestAnimationFrame(analyzeLoop);
     };
 
@@ -624,21 +698,31 @@ export default function DebatePage() {
   };
 
   const setupAudioAnalysis = (stream: MediaStream, isLocal: boolean) => {
-    if (!audioContextRef.current) {
-      audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+    const context = ensureAudioContext();
+    if (!context) {
+      return;
     }
-
-    const source = audioContextRef.current.createMediaStreamSource(stream);
-    const analyser = audioContextRef.current.createAnalyser();
-    analyser.fftSize = 256;
-    analyser.smoothingTimeConstant = 0.8;
-    source.connect(analyser);
+    const source = context.createMediaStreamSource(stream);
+    const analyser = context.createAnalyser();
+    analyser.fftSize = 1024;
+    analyser.smoothingTimeConstant = 0.75;
 
     if (isLocal) {
+      if (localSourceRef.current) {
+        localSourceRef.current.disconnect();
+      }
+      localSourceRef.current = source;
       localAnalyserRef.current = analyser;
     } else {
+      if (remoteSourceRef.current) {
+        remoteSourceRef.current.disconnect();
+      }
+      remoteSourceRef.current = source;
       remoteAnalyserRef.current = analyser;
     }
+
+    source.connect(analyser);
+    startVolumeAnalysis();
   };
 
   // Set up audio analysis when streams are available
@@ -649,26 +733,25 @@ export default function DebatePage() {
   }, [localStream]);
 
   useEffect(() => {
-    if (remoteVideoRef.current?.srcObject) {
-      const remoteStream = remoteVideoRef.current.srcObject as MediaStream;
-      if (remoteStream.getAudioTracks().length > 0) {
-        setupAudioAnalysis(remoteStream, false);
-      }
-    }
-  }, [remoteVideoRef.current?.srcObject]);
-
-  // Start volume analysis when both analysers are ready
-  useEffect(() => {
-    if (localAnalyserRef.current || remoteAnalyserRef.current) {
-      startVolumeAnalysis();
-    }
-
     return () => {
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current);
+      stopVolumeAnalysis();
+      if (localSourceRef.current) {
+        localSourceRef.current.disconnect();
+        localSourceRef.current = null;
+      }
+      if (remoteSourceRef.current) {
+        remoteSourceRef.current.disconnect();
+        remoteSourceRef.current = null;
+      }
+      localAnalyserRef.current = null;
+      remoteAnalyserRef.current = null;
+      remoteStreamRef.current = null;
+      if (audioContextRef.current) {
+        audioContextRef.current.close().catch(() => undefined);
+        audioContextRef.current = null;
       }
     };
-  }, [localAnalyserRef.current, remoteAnalyserRef.current]);
+  }, []);
 
   // Send ready signal when both local stream and remote user are available
   useEffect(() => {
@@ -727,7 +810,6 @@ export default function DebatePage() {
       });
 
       console.log("Local stream started successfully with audio enabled");
-      setIsAudioOn(true);
       setIsVideoOn(true);
       return stream;
     } catch (error) {
@@ -761,24 +843,10 @@ export default function DebatePage() {
     }
 
     setIsVideoOn(nextVideoState);
-    setIsAudioOn(audioTrack ? audioTrack.enabled : audioShouldBeOn);
 
     console.log(`Video toggled to: ${nextVideoState}`);
     if (audioTrack) {
       console.log(`Audio synced to video state: ${audioTrack.enabled}`);
-    }
-  };
-
-  const toggleAudio = (): void => {
-    const stream = localStreamRef.current;
-    if (stream) {
-      const audioTracks = stream.getAudioTracks();
-      const newAudioState = !isAudioOn;
-      setIsAudioOn(newAudioState);
-      audioTracks.forEach(track => {
-        track.enabled = newAudioState;
-        console.log(`Audio manually toggled to: ${track.enabled}`);
-      });
     }
   };
 
@@ -806,7 +874,7 @@ export default function DebatePage() {
     setCurrentSpeaker(null);
     setPhaseDescription("");
     setCanSpeak(true);
-    setRemoteVolume(0);
+    setRemoteVolume(-60);
     readySentRef.current = false;
     setUserPosition(null);
     userPositionRef.current = null;
@@ -815,6 +883,13 @@ export default function DebatePage() {
     setFactStatus("idle");
     setFactData(null);
     fetchedQuestionRef.current = null;
+    if (remoteSourceRef.current) {
+      remoteSourceRef.current.disconnect();
+      remoteSourceRef.current = null;
+    }
+    remoteAnalyserRef.current = null;
+    remoteStreamRef.current = null;
+    startVolumeAnalysis();
     closePeerConnection();
   };
 
@@ -834,6 +909,21 @@ export default function DebatePage() {
     }
     resetRemoteState();
 
+    if (localSourceRef.current) {
+      localSourceRef.current.disconnect();
+      localSourceRef.current = null;
+    }
+    if (remoteSourceRef.current) {
+      remoteSourceRef.current.disconnect();
+      remoteSourceRef.current = null;
+    }
+    localAnalyserRef.current = null;
+    remoteAnalyserRef.current = null;
+    remoteStreamRef.current = null;
+    stopVolumeAnalysis();
+    setLocalVolume(-60);
+    setRemoteVolume(-60);
+
     try {
       sessionStorage.removeItem('activeMatch');
     } catch (err) {
@@ -848,11 +938,15 @@ export default function DebatePage() {
       localVideoRef.current.srcObject = null;
     }
 
+    if (audioContextRef.current) {
+      audioContextRef.current.close().catch(() => undefined);
+      audioContextRef.current = null;
+    }
+
     setLocalStream(null);
-    setLocalVolume(0);
+    setLocalVolume(-60);
     readySentRef.current = false;
     userPositionRef.current = null;
-    setIsAudioOn(true);
     setIsVideoOn(true);
     setIsCallActive(false);
 
@@ -908,9 +1002,26 @@ export default function DebatePage() {
       };
       
       newPc.ontrack = (e: RTCTrackEvent) => {
+        if (!e.streams[0]) {
+          return;
+        }
         console.log("Received remote track", e.streams[0]);
         if (remoteVideoRef.current) {
           remoteVideoRef.current.srcObject = e.streams[0];
+        }
+        remoteStreamRef.current = e.streams[0];
+        if (e.track.kind === "audio" && e.streams[0].getAudioTracks().length > 0) {
+          setupAudioAnalysis(e.streams[0], false);
+          e.track.addEventListener("ended", () => {
+            if (remoteSourceRef.current) {
+              remoteSourceRef.current.disconnect();
+              remoteSourceRef.current = null;
+            }
+            remoteAnalyserRef.current = null;
+            remoteStreamRef.current = null;
+            setRemoteVolume(-60);
+            startVolumeAnalysis();
+          }, { once: true });
         }
       };
       
@@ -957,9 +1068,26 @@ export default function DebatePage() {
       };
       
       newPc.ontrack = (e: RTCTrackEvent) => {
+        if (!e.streams[0]) {
+          return;
+        }
         console.log("Received remote track on answer side", e.streams[0]);
         if (remoteVideoRef.current) {
           remoteVideoRef.current.srcObject = e.streams[0];
+        }
+        remoteStreamRef.current = e.streams[0];
+        if (e.track.kind === "audio" && e.streams[0].getAudioTracks().length > 0) {
+          setupAudioAnalysis(e.streams[0], false);
+          e.track.addEventListener("ended", () => {
+            if (remoteSourceRef.current) {
+              remoteSourceRef.current.disconnect();
+              remoteSourceRef.current = null;
+            }
+            remoteAnalyserRef.current = null;
+            remoteStreamRef.current = null;
+            setRemoteVolume(-60);
+            startVolumeAnalysis();
+          }, { once: true });
         }
       };
       
@@ -1017,6 +1145,11 @@ export default function DebatePage() {
     cleanupCall({ notifyServer: true, redirect: true, reason: "local-hangup" });
   };
 
+  const localIsActiveSpeaker = debateActive && canSpeak;
+  const remoteIsActiveSpeaker = debateActive && currentSpeaker !== null && currentSpeaker !== userPosition;
+  const localLevel = Math.max(0, Math.min(100, Math.round(((localVolume + 60) / 60) * 100)));
+  const remoteLevel = Math.max(0, Math.min(100, Math.round(((remoteVolume + 60) / 60) * 100)));
+
   return (
     <div className="relative h-screen bg-gray-900 overflow-hidden">
       <div className="flex h-full flex-col lg:flex-row">
@@ -1024,7 +1157,7 @@ export default function DebatePage() {
          
           <div className="flex-1 min-h-0 px-4 pb-4">
             <div className="grid h-full min-h-0 grid-rows-2 gap-4">
-              <div className="relative h-full overflow-hidden rounded-xl border-2 border-solid border-green-500 bg-black shadow-lg">
+              <div className="relative h-full overflow-hidden rounded-xl bg-black shadow-lg">
                 <Video
                   ref={localVideoRef}
                   name={localUser.name === "Anonymous" ? "You" : localUser.name}
@@ -1033,6 +1166,7 @@ export default function DebatePage() {
                     localUser.affiliation === "Unknown" ? "Setting up..." : localUser.affiliation
                   )}
                   muted={true}
+                  highlight={localIsActiveSpeaker}
                 />
                 <div className="absolute bottom-4 right-4 min-w-24 rounded-lg bg-black/70 p-2 backdrop-blur-sm">
                   <div className="text-white text-xs mb-1">Your Volume</div>
@@ -1040,13 +1174,13 @@ export default function DebatePage() {
                     <div className="relative h-8 w-2 overflow-hidden rounded-sm bg-gray-700">
                       <div
                         className={`absolute bottom-0 w-full transition-all duration-100 rounded-sm ${
-                          localVolume > 70 ? 'bg-red-500' :
-                          localVolume > 40 ? 'bg-yellow-500' : 'bg-green-500'
+                          localLevel > 70 ? 'bg-red-500' :
+                          localLevel > 40 ? 'bg-yellow-500' : 'bg-green-500'
                         }`}
-                        style={{ height: `${Math.min(localVolume, 100)}%` }}
+                        style={{ height: `${localLevel}%` }}
                       />
                     </div>
-                    <div className="text-white text-xs font-mono">{localVolume}dB</div>
+                    <div className="text-white text-xs font-mono">{Math.round(localVolume)} dB</div>
                   </div>
                 </div>
               </div>
@@ -1058,20 +1192,21 @@ export default function DebatePage() {
                     remoteUser,
                     remoteUser ? (remoteUser.affiliation || "") : "Awaiting opponent..."
                   )}
+                  highlight={remoteIsActiveSpeaker}
                 />
-                <div className="absolute bottom-4 right-4 min-w-24 rounded-lg bg-black/70 p-2 backdrop-blur-sm">
+                <div className="absolute bottom-4 left-4 min-w-24 rounded-lg bg-black/70 p-2 backdrop-blur-sm">
                   <div className="text-white text-xs mb-1">Opponent Volume</div>
                   <div className="flex items-center space-x-1">
                     <div className="relative h-8 w-2 overflow-hidden rounded-sm bg-gray-700">
                       <div
                         className={`absolute bottom-0 w-full transition-all duration-100 rounded-sm ${
-                          remoteVolume > 70 ? 'bg-red-500' :
-                          remoteVolume > 40 ? 'bg-yellow-500' : 'bg-green-500'
+                          remoteLevel > 70 ? 'bg-red-500' :
+                          remoteLevel > 40 ? 'bg-yellow-500' : 'bg-green-500'
                         }`}
-                        style={{ height: `${Math.min(remoteVolume, 100)}%` }}
+                        style={{ height: `${remoteLevel}%` }}
                       />
                     </div>
-                    <div className="text-white text-xs font-mono">{remoteVolume}dB</div>
+                    <div className="text-white text-xs font-mono">{Math.round(remoteVolume)} dB</div>
                   </div>
                 </div>
               </div>
