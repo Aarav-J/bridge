@@ -1,16 +1,25 @@
 "use client";
 
 import Link from "next/link";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { io, Socket } from "socket.io-client";
 import useStore from "@/store/useStore";
+import type { PoliticalSpectrumScores } from "@/store/useStore";
 import { fetchUserProfile, getPoliticalLabel } from "@/utils/userProfile";
 import { supabase } from "@/utils/supabaseClient";
 import UserProfile from "@/app/components/UserProfile";
 
 const SOCKET_URL = process.env.NEXT_PUBLIC_SOCKET_URL?.trim() || "http://localhost:3000";
 const API_BASE = SOCKET_URL.replace(/\/+$/, "");
+
+type DebateUserSummary = {
+  name: string;
+  affiliation: string;
+  username: string | null;
+  politicalScore: number | null;
+  spectrum: PoliticalSpectrumScores | null;
+};
 
 export default function HomePage() {
   const userData = useStore((state) => state.userData);
@@ -26,6 +35,29 @@ export default function HomePage() {
   const [debateStatus, setDebateStatus] = useState({ participants: 0, active: false, waiting: 0 });
   const [matchStatus, setMatchStatus] = useState<string | null>(null);
   const router = useRouter();
+  const userDataRef = useRef(userData);
+
+  useEffect(() => {
+    userDataRef.current = userData;
+  }, [userData]);
+
+  const buildUserSummary = (data: typeof userData): DebateUserSummary | null => {
+    if (!data) {
+      return null;
+    }
+
+    const politicalScore = typeof data.overall_affiliation === "number" ? data.overall_affiliation : null;
+    const affiliationLabel = data.politicalLean ?? (politicalScore !== null ? getPoliticalLabel(politicalScore) : "Undeclared");
+    const spectrum: PoliticalSpectrumScores | null = data.quizResults?.spectrum ?? null;
+
+    return {
+      name: data.fullName,
+      affiliation: affiliationLabel,
+      username: data.username ?? null,
+      politicalScore,
+      spectrum
+    };
+  };
 
   useEffect(() => {
     let active = true;
@@ -116,16 +148,20 @@ export default function HomePage() {
       setMatchStatus("matched");
 
       try {
-        sessionStorage.setItem(
-          "activeMatch",
-          JSON.stringify({
-            roomId: payload.roomId,
-            position: payload.position,
-            opponent: payload.match || null,
-            topic: payload.topic ?? null,
-            question: payload.question ?? null
-          })
-        );
+        const selfSummary = buildUserSummary(userDataRef.current);
+        const matchRecord: Record<string, unknown> = {
+          roomId: payload.roomId,
+          position: payload.position,
+          opponent: payload.match || null,
+          topic: payload.topic ?? null,
+          question: payload.question ?? null
+        };
+
+        if (selfSummary) {
+          matchRecord.self = selfSummary;
+        }
+
+        sessionStorage.setItem("activeMatch", JSON.stringify(matchRecord));
       } catch (err) {
         console.warn("Unable to store activeMatch", err);
       }
@@ -175,30 +211,46 @@ export default function HomePage() {
       return;
     }
 
+    const userSummary = buildUserSummary(userData);
+    if (!userSummary) {
+      alert("Unable to determine your profile details. Please refresh and try again.");
+      return;
+    }
+
     setIsStarting(true);
-    console.log("Starting video call with user data:", userData);
+    console.log("Starting video call with user data:", userSummary);
+
+    try {
+      localStorage.setItem('userData', JSON.stringify(userSummary));
+    } catch (err) {
+      console.warn('Failed to persist user summary to localStorage', err);
+    }
 
     // Send user info to server - this will be received by all connected clients
     socket.emit("message", {
       type: "userJoin",
-      userName: userData.fullName,
-      userAffiliation: userData.politicalLean ?? (typeof userData.overall_affiliation === "number"
-        ? getPoliticalLabel(userData.overall_affiliation)
-        : "Undeclared")
+      userName: userSummary.name,
+      userAffiliation: userSummary.affiliation,
+      username: userSummary.username,
+      politicalScore: userSummary.politicalScore,
+      spectrum: userSummary.spectrum
     });
 
     console.log("Sent user join message to server:", {
       type: "userJoin",
-      userName: userData.fullName,
-      userAffiliation: userData.politicalLean
+      userName: userSummary.name,
+      userAffiliation: userSummary.affiliation,
+      username: userSummary.username,
+      politicalScore: userSummary.politicalScore
     });
 
     // Navigate directly to debate page without URL parameters
     socket.emit("join-matchmaking", {
-      name: userData.fullName,
-      affiliation: userData.politicalLean ?? (typeof userData.overall_affiliation === "number"
-        ? getPoliticalLabel(userData.overall_affiliation)
-        : "Undeclared")
+      name: userSummary.name,
+      affiliation: userSummary.affiliation,
+      username: userSummary.username,
+      politicalScore: userSummary.politicalScore,
+      spectrum: userSummary.spectrum
     });
 
     try {

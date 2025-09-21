@@ -6,6 +6,7 @@ import Video from "../components/Video";
 import ControlPanel from "../components/ControlPanel";
 import { useRouter, useSearchParams } from "next/navigation";
 import { factCall } from "@/utils/factCall";
+import type { PoliticalSpectrumScores } from "@/store/useStore";
 
 const configuration: RTCConfiguration = {
   iceServers: [
@@ -30,9 +31,76 @@ interface SocketMessage {
 interface UserInfo {
   name: string;
   affiliation: string;
+  username?: string | null;
+  politicalScore?: number | null;
+  spectrum?: PoliticalSpectrumScores | null;
 }
 
 const SOCKET_URL = process.env.NEXT_PUBLIC_SOCKET_URL?.trim() || "http://localhost:3000";
+
+const createDefaultUser = (): UserInfo => ({
+  name: "Anonymous",
+  affiliation: "Unknown",
+  username: null,
+  politicalScore: null,
+  spectrum: null
+});
+
+const parseUserInfo = (data: any): UserInfo | null => {
+  if (!data) {
+    return null;
+  }
+
+  return {
+    name: data.name ?? "Anonymous",
+    affiliation: data.affiliation ?? "Unknown",
+    username: data.username ?? null,
+    politicalScore: typeof data.politicalScore === "number" ? data.politicalScore : null,
+    spectrum: data.spectrum ?? null
+  };
+};
+
+const ensureUserInfo = (data: any): UserInfo => parseUserInfo(data) ?? createDefaultUser();
+
+const formatUserLabel = (user: UserInfo | null, fallback = ""): string => {
+  if (!user) {
+    return fallback;
+  }
+
+  const parts: string[] = [];
+
+  if (user.username) {
+    parts.push(`@${user.username}`);
+  }
+
+  if (typeof user.politicalScore === "number") {
+    parts.push(`Score: ${user.politicalScore}`);
+  }
+
+  if (user.affiliation) {
+    parts.push(user.affiliation);
+  }
+
+  return parts.length > 0 ? parts.join(" • ") : fallback;
+};
+
+const isSameUser = (a?: UserInfo | null, b?: UserInfo | null): boolean => {
+  if (!a || !b) {
+    return false;
+  }
+
+  if (a.username && b.username) {
+    return a.username === b.username;
+  }
+
+  if (typeof a.politicalScore === "number" && typeof b.politicalScore === "number") {
+    if (a.politicalScore !== b.politicalScore) {
+      return false;
+    }
+  }
+
+  return a.name === b.name && a.affiliation === b.affiliation;
+};
 
 const socket: Socket = io(SOCKET_URL, { transports: ["websocket"] });
 
@@ -41,7 +109,7 @@ export default function DebatePage() {
   const [isCallActive, setIsCallActive] = useState(false);
   const [isVideoOn, setIsVideoOn] = useState(true);
   const [remoteUser, setRemoteUser] = useState<UserInfo | null>(null);
-  const [localUser, setLocalUser] = useState<UserInfo>({ name: "Anonymous", affiliation: "Unknown" });
+  const [localUser, setLocalUser] = useState<UserInfo>(createDefaultUser());
   const [userPosition, setUserPosition] = useState<string | null>(null); // "user1" or "user2"
   const [debateTopic, setDebateTopic] = useState<string | null>(null);
   const [debateQuestion, setDebateQuestion] = useState<string | null>(null);
@@ -101,6 +169,11 @@ export default function DebatePage() {
   const readySentRef = useRef(false);
   const factAbortRef = useRef<AbortController | null>(null);
   const fetchedQuestionRef = useRef<string | null>(null);
+  const localUserRef = useRef<UserInfo>(localUser);
+
+  useEffect(() => {
+    localUserRef.current = localUser;
+  }, [localUser]);
 
   useEffect(() => {
     roomIdRef.current = roomId;
@@ -121,8 +194,16 @@ export default function DebatePage() {
         userPositionRef.current = parsed.position;
         setUserPosition(parsed.position);
       }
-      if (!remoteUser && parsed?.opponent) {
-        setRemoteUser(parsed.opponent);
+
+      const storedSelf = parsed?.self ? ensureUserInfo(parsed.self) : null;
+      const storedOpponent = parsed?.opponent ? ensureUserInfo(parsed.opponent) : null;
+
+      if (storedSelf) {
+        setLocalUser(storedSelf);
+      }
+
+      if (storedOpponent && !isSameUser(storedOpponent, storedSelf)) {
+        setRemoteUser(storedOpponent);
       }
       if (parsed?.topic) {
         setDebateTopic(parsed.topic);
@@ -220,22 +301,47 @@ export default function DebatePage() {
         return;
       }
 
-      // Get user data from localStorage (set from main page)
-      const storedUserData = localStorage.getItem('userData');
-      if (storedUserData) {
-        const userData = JSON.parse(storedUserData);
-        console.log('Setting local user from localStorage:', userData);
-        setLocalUser(userData);
+      let userInfo: UserInfo | null = null;
+
+      try {
+        const storedUserData = localStorage.getItem('userData');
+        if (storedUserData) {
+          userInfo = parseUserInfo(JSON.parse(storedUserData));
+        }
+      } catch (err) {
+        console.warn('Failed to read user data from localStorage', err);
+      }
+
+      if (!userInfo) {
+        try {
+          const storedMatch = sessionStorage.getItem('activeMatch');
+          if (storedMatch) {
+            const parsed = JSON.parse(storedMatch);
+            if (parsed?.self) {
+              userInfo = parseUserInfo(parsed.self);
+            }
+          }
+        } catch (err) {
+          console.warn('Failed to read fallback user data from sessionStorage', err);
+        }
+      }
+
+      if (userInfo) {
+        console.log('Setting local user for debate:', userInfo);
+        setLocalUser(userInfo);
 
         // Join the debate room
-        console.log('Joining debate with user data:', userData, 'room:', roomIdRef.current);
+        console.log('Joining debate with user data:', userInfo, 'room:', roomIdRef.current);
         socket.emit("join-debate", {
-          name: userData.name,
-          affiliation: userData.affiliation,
+          name: userInfo.name,
+          affiliation: userInfo.affiliation,
+          username: userInfo.username,
+          politicalScore: userInfo.politicalScore,
+          spectrum: userInfo.spectrum,
           roomId: roomIdRef.current
         });
       } else {
-        console.log('No user data found in localStorage');
+        console.log('No user data found for debate join');
       }
     };
 
@@ -253,17 +359,24 @@ export default function DebatePage() {
       
       // Set remote user if there's another participant
       const participants = data.participants || {};
-      Object.keys(participants).forEach(pos => {
-        if (pos !== data.position) {
-          const participant = participants[pos];
-          const info = {
-            name: participant.name,
-            affiliation: participant.affiliation
-          };
-          setRemoteUser(info);
+      const participantEntries = Object.entries(participants);
+      const selfParticipant = participants?.[data.position];
+      const normalizedSelf = selfParticipant ? ensureUserInfo(selfParticipant) : null;
+
+      if (normalizedSelf) {
+        setLocalUser(normalizedSelf);
+      }
+
+      for (const [pos, participant] of participantEntries) {
+        if (pos === data.position) {
+          continue;
+        }
+        const normalizedOpponent = ensureUserInfo(participant);
+        if (!isSameUser(normalizedOpponent, normalizedSelf)) {
+          setRemoteUser(normalizedOpponent);
           readySentRef.current = false;
         }
-      });
+      }
       if (data.topic !== undefined) {
         setDebateTopic(data.topic ?? null);
       }
@@ -277,7 +390,10 @@ export default function DebatePage() {
         return;
       }
       console.log("Another user joined:", data);
-      setRemoteUser(data.user);
+      const normalizedOpponent = ensureUserInfo(data.user);
+      if (!isSameUser(normalizedOpponent, localUserRef.current)) {
+        setRemoteUser(normalizedOpponent);
+      }
       readySentRef.current = false;
     });
 
@@ -429,26 +545,30 @@ export default function DebatePage() {
 
   // Handle audio muting based on speaking turns
   useEffect(() => {
-    if (localStream) {
-      const audioTracks = localStream.getAudioTracks();
-      
-      if (debateActive) {
-        // During debate: follow the canSpeak rules
-        console.log(`Setting audio tracks enabled to: ${canSpeak} (found ${audioTracks.length} tracks)`);
-        audioTracks.forEach(track => {
-          track.enabled = canSpeak;
-          console.log(`Audio track ${track.id} enabled: ${track.enabled}`);
-        });
-        console.log(`Audio ${canSpeak ? 'enabled' : 'muted'} for debate`);
-      } else {
-        // Before/after debate: audio should be enabled for everyone
-        console.log(`Debate not active - enabling audio for all users`);
-        audioTracks.forEach(track => {
-          track.enabled = true;
-        });
-      }
+    if (!localStream) {
+      return;
     }
-  }, [canSpeak, localStream, debateActive]);
+
+    const audioTracks = localStream.getAudioTracks();
+    if (audioTracks.length === 0) {
+      return;
+    }
+
+    const shouldEnableAudio = debateActive ? (canSpeak && isVideoOn) : isVideoOn;
+
+    if (debateActive) {
+      console.log(`Setting audio tracks enabled to: ${shouldEnableAudio} (found ${audioTracks.length} tracks)`);
+    } else {
+      console.log(`Debate not active - syncing audio with video state (${shouldEnableAudio})`);
+    }
+
+    audioTracks.forEach(track => {
+      track.enabled = shouldEnableAudio;
+      console.log(`Audio track ${track.id} enabled: ${track.enabled}`);
+    });
+
+    setIsAudioOn(prev => (prev !== shouldEnableAudio ? shouldEnableAudio : prev));
+  }, [canSpeak, localStream, debateActive, isVideoOn]);
 
   // Debug logging for UI state
   useEffect(() => {
@@ -619,19 +739,33 @@ export default function DebatePage() {
 
   const toggleVideo = (): void => {
     const stream = localStreamRef.current;
-    if (stream) {
-      const videoTrack = stream.getVideoTracks()[0]; 
-      const audioTrack = stream.getAudioTracks()[0];
-      if (videoTrack) {
-        videoTrack.enabled = !videoTrack.enabled;
-        audioTrack.enabled = !audioTrack.enabled;
-        setIsAudioOn(audioTrack.enabled);
-        setIsVideoOn(videoTrack.enabled);
+    if (!stream) {
+      return;
+    }
 
-        // Don't touch audio when toggling video - audio is controlled by debate muting logic
-        console.log(`Video toggled to: ${videoTrack.enabled}`);
-        console.log(`Audio toggled to: ${audioTrack.enabled} (controlled by debate logic)`);
-      }
+    const [videoTrack] = stream.getVideoTracks();
+    const [audioTrack] = stream.getAudioTracks();
+
+    if (!videoTrack) {
+      console.warn("No local video track available to toggle");
+      return;
+    }
+
+    const nextVideoState = !videoTrack.enabled;
+    const audioShouldBeOn = nextVideoState && (!debateActive || canSpeak);
+
+    videoTrack.enabled = nextVideoState;
+
+    if (audioTrack) {
+      audioTrack.enabled = audioShouldBeOn;
+    }
+
+    setIsVideoOn(nextVideoState);
+    setIsAudioOn(audioTrack ? audioTrack.enabled : audioShouldBeOn);
+
+    console.log(`Video toggled to: ${nextVideoState}`);
+    if (audioTrack) {
+      console.log(`Audio synced to video state: ${audioTrack.enabled}`);
     }
   };
 
@@ -884,218 +1018,164 @@ export default function DebatePage() {
   };
 
   return (
-    <div className="h-screen bg-gray-900 relative flex overflow-hidden">
-      {/* Video panel - 50% of horizontal space */}
-      <div className="w-1/2 h-full flex flex-col">
-        {/* Top video - Local user - 50% of vertical space */}
-        <div className="h-1/2 relative overflow-hidden">
-          <Video 
-            ref={localVideoRef}
-            name={localUser.name === "Anonymous" ? "You" : localUser.name}
-            label={localUser.affiliation === "Unknown" ? "Setting up..." : localUser.affiliation}
-            muted={true}
-          />
-          {/* Local volume indicator */}
-          <div className="absolute bottom-4 right-4 bg-black bg-opacity-60 rounded-lg p-2 min-w-20">
-            <div className="text-white text-xs mb-1">Volume</div>
-            <div className="flex items-center space-x-1">
-              <div className="w-2 h-8 bg-gray-600 rounded-sm relative overflow-hidden">
-                <div 
-                  className={`absolute bottom-0 w-full transition-all duration-100 rounded-sm ${
-                    localVolume > 70 ? 'bg-red-500' : 
-                    localVolume > 40 ? 'bg-yellow-500' : 'bg-green-500'
-                  }`}
-                  style={{ height: `${Math.min(localVolume, 100)}%` }}
+    <div className="relative h-screen bg-gray-900 overflow-hidden">
+      <div className="flex h-full flex-col lg:flex-row">
+        <div className="flex h-full w-full flex-col lg:w-2/3">
+         
+          <div className="flex-1 min-h-0 px-4 pb-4">
+            <div className="grid h-full min-h-0 grid-rows-2 gap-4">
+              <div className="relative h-full overflow-hidden rounded-xl border-2 border-solid border-green-500 bg-black shadow-lg">
+                <Video
+                  ref={localVideoRef}
+                  name={localUser.name === "Anonymous" ? "You" : localUser.name}
+                  label={formatUserLabel(
+                    localUser,
+                    localUser.affiliation === "Unknown" ? "Setting up..." : localUser.affiliation
+                  )}
+                  muted={true}
                 />
+                <div className="absolute bottom-4 right-4 min-w-24 rounded-lg bg-black/70 p-2 backdrop-blur-sm">
+                  <div className="text-white text-xs mb-1">Your Volume</div>
+                  <div className="flex items-center space-x-1">
+                    <div className="relative h-8 w-2 overflow-hidden rounded-sm bg-gray-700">
+                      <div
+                        className={`absolute bottom-0 w-full transition-all duration-100 rounded-sm ${
+                          localVolume > 70 ? 'bg-red-500' :
+                          localVolume > 40 ? 'bg-yellow-500' : 'bg-green-500'
+                        }`}
+                        style={{ height: `${Math.min(localVolume, 100)}%` }}
+                      />
+                    </div>
+                    <div className="text-white text-xs font-mono">{localVolume}dB</div>
+                  </div>
+                </div>
               </div>
-              <div className="text-white text-xs font-mono">
-                {localVolume}dB
+              <div className="relative h-full overflow-hidden rounded-xl bg-black shadow-lg">
+                <Video
+                  ref={remoteVideoRef}
+                  name={remoteUser?.name || "Waiting for participant..."}
+                  label={formatUserLabel(
+                    remoteUser,
+                    remoteUser ? (remoteUser.affiliation || "") : "Awaiting opponent..."
+                  )}
+                />
+                <div className="absolute bottom-4 right-4 min-w-24 rounded-lg bg-black/70 p-2 backdrop-blur-sm">
+                  <div className="text-white text-xs mb-1">Opponent Volume</div>
+                  <div className="flex items-center space-x-1">
+                    <div className="relative h-8 w-2 overflow-hidden rounded-sm bg-gray-700">
+                      <div
+                        className={`absolute bottom-0 w-full transition-all duration-100 rounded-sm ${
+                          remoteVolume > 70 ? 'bg-red-500' :
+                          remoteVolume > 40 ? 'bg-yellow-500' : 'bg-green-500'
+                        }`}
+                        style={{ height: `${Math.min(remoteVolume, 100)}%` }}
+                      />
+                    </div>
+                    <div className="text-white text-xs font-mono">{remoteVolume}dB</div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
         </div>
-        
-        {/* Bottom video - Remote user - 50% of vertical space */}
-        <div className="h-1/2 relative overflow-hidden">
-          <Video 
-            ref={remoteVideoRef}
-            name={remoteUser?.name || "Waiting for participant..."}
-            label={remoteUser?.affiliation || ""}
-          />
-          {/* Remote volume indicator */}
-          <div className="absolute bottom-4 right-4 bg-black bg-opacity-60 rounded-lg p-2 min-w-20">
-            <div className="text-white text-xs mb-1">Volume</div>
-            <div className="flex items-center space-x-1">
-              <div className="w-2 h-8 bg-gray-600 rounded-sm relative overflow-hidden">
-                <div 
-                  className={`absolute bottom-0 w-full transition-all duration-100 rounded-sm ${
-                    remoteVolume > 70 ? 'bg-red-500' : 
-                    remoteVolume > 40 ? 'bg-yellow-500' : 'bg-green-500'
-                  }`}
-                  style={{ height: `${Math.min(remoteVolume, 100)}%` }}
-                />
-              </div>
-              <div className="text-white text-xs font-mono">
-                {remoteVolume}dB
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-      
-      {/* Right panel - 50% of horizontal space for debate timer */}
-      <div className="w-1/2 h-full bg-gray-800 flex flex-col">
-        
-        <div className="bg-gray-900 p-4 m-4 rounded-lg border border-blue-900/40">
-          <div className="text-white space-y-3">
-            <div>
-              <h2 className="text-xl font-bold mb-2 text-center text-blue-200">Debate Topic</h2>
-              <p className="text-center text-sm text-blue-100">
+        <div className="flex h-full w-full flex-col gap-4 overflow-y-auto bg-gray-900 p-4 lg:w-1/3">
+         <div className="flex-none px-4 pt-4 pb-2">
+            <div className="rounded-lg border border-blue-900/40 bg-gray-900 p-4 shadow-lg">
+              <h2 className="text-center text-lg font-semibold uppercase tracking-wide text-blue-200">Debate Topic</h2>
+              <p className="mt-2 text-center text-sm text-blue-100">
                 {debateTopic ? debateTopic : 'Topic will be assigned once both participants join.'}
               </p>
-            </div>
-            <div className="bg-gray-800 p-3 rounded-lg min-h-[90px] flex items-center justify-center">
-              <p className="text-sm text-gray-200 text-center">
-                {debateQuestion ? debateQuestion : 'Waiting for matchup...'}
-              </p>
+              <div className="mt-3 flex min-h-[70px] items-center justify-center rounded-md bg-gray-800 p-3">
+                <p className="text-center text-sm text-gray-200">
+                  {debateQuestion ? debateQuestion : 'Waiting for matchup...'}
+                </p>
+              </div>
             </div>
           </div>
-        </div>
-
-        <div className="bg-gray-900 p-4 mx-4 mb-4 rounded-lg border border-emerald-900/40">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-lg font-semibold text-emerald-200">Supporting Facts</h3>
-            {factData?.last_updated && (
-              <span className="text-xs text-gray-400">Updated {factData.last_updated}</span>
+          <div className="rounded-lg border border-purple-900/40 bg-gray-900 p-4">
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="text-lg font-semibold text-purple-200">Debate Status</h3>
+              <span className={`text-xs px-2 py-1 rounded-full ${debateActive ? 'bg-green-900 text-green-200' : 'bg-gray-800 text-gray-300'}`}>
+                {debateActive ? 'In Progress' : 'Waiting'}
+              </span>
+            </div>
+            <div className="space-y-3 rounded-lg bg-gray-800 p-3">
+              <div className="flex items-center justify-between text-sm">
+                <span className="font-medium text-gray-300">Current Phase</span>
+                <span className="text-blue-200">{debateActive ? `Phase ${currentPhase}` : 'Not started'}</span>
+              </div>
+              <div className="flex items-center justify-between text-sm">
+                <span className="font-medium text-gray-300">Speaker</span>
+                <span className={canSpeak ? 'text-green-300' : 'text-red-300'}>
+                  {debateActive
+                    ? currentSpeaker === userPosition
+                      ? 'You'
+                      : remoteUser?.name || 'Opponent'
+                    : 'Waiting to start'}
+                </span>
+              </div>
+              <div className="flex items-center justify-between text-sm">
+                <span className="font-medium text-gray-300">Time Remaining</span>
+                <span className="font-mono text-orange-200">
+                  {debateActive
+                    ? `${Math.floor(timeRemaining / 60)}:${(timeRemaining % 60).toString().padStart(2, '0')}`
+                    : '--:--'}
+                </span>
+              </div>
+              <div className="text-xs text-gray-400">
+                {debateActive
+                  ? phaseDescription || 'Follow prompts as they appear.'
+                  : 'Debate will begin automatically once both participants are ready.'}
+              </div>
+            </div>
+          </div>
+          <div className="rounded-lg border border-emerald-900/40 bg-gray-900 p-4">
+          
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="text-lg font-semibold text-emerald-200">Supporting Facts</h3>
+              {factData?.last_updated && (
+                <span className="text-xs text-gray-400">Updated {factData.last_updated}</span>
+              )}
+            </div>
+            {factStatus === "loading" && (
+              <div className="flex items-center justify-center py-6 text-sm text-emerald-300">
+                <div className="mr-3 h-4 w-4 animate-spin rounded-full border-b-2 border-emerald-400" />
+                Gathering contextual facts...
+              </div>
             )}
-          </div>
-          {factStatus === "loading" && (
-            <div className="flex items-center justify-center text-emerald-300 text-sm py-6">
-              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-emerald-400 mr-3" />
-              Gathering contextual facts...
-            </div>
-          )}
-          {factStatus === "error" && (
-            <div className="text-sm text-red-300 bg-red-900/40 rounded-md p-3">
-              Unable to fetch supporting facts right now.
-            </div>
-          )}
-          {factStatus === "success" && factData?.facts?.length === 0 && (
-            <div className="text-sm text-gray-300 bg-gray-800 rounded-md p-3">
-              No additional facts available for this topic.
-            </div>
-          )}
-          {factStatus === "success" && factData?.facts?.length ? (
-            <ul className="space-y-3">
-              {factData.facts.map((item, index) => (
-                <li key={index} className="bg-gray-800 rounded-lg p-3">
-                  <p className="text-sm text-gray-100 leading-snug mb-2">{item.fact}</p>
-                  <div className="flex flex-wrap text-xs text-gray-400 gap-x-3 gap-y-1">
-                    {item.source && <span className="text-blue-300">Source: {item.source}</span>}
-                    {item.reliability && <span className="uppercase">Reliability: {item.reliability}</span>}
-                    {item.context && <span className="text-gray-300">Context: {item.context}</span>}
-                  </div>
-                </li>
-              ))}
-            </ul>
-          ) : null}
-          {factStatus === "idle" && !debateQuestion && (
-            <div className="text-sm text-gray-400 bg-gray-800 rounded-md p-3">
-              Supporting facts will appear here once the debate begins.
-            </div>
-          )}
-        </div>
-
-        {/* Compact Timer Section */}
-        {debateActive && (
-          <div className="bg-gray-900 p-3 m-4 rounded-lg">
-            <div className="text-center text-white">
-              <div className="flex justify-between items-center mb-2">
-                <div className="text-sm text-blue-300">
-                  Phase {currentPhase + 1}/6
-                </div>
-                <div className="text-lg font-mono text-green-400">
-                  {Math.floor(timeRemaining / 60)}:{(timeRemaining % 60).toString().padStart(2, '0')}
-                </div>
+            {factStatus === "error" && (
+              <div className="rounded-md bg-red-900/40 p-3 text-sm text-red-300">
+                Unable to fetch supporting facts right now.
               </div>
-              
-              <div className="text-xs text-gray-300 mb-2">
-                {phaseDescription}
+            )}
+            {factStatus === "success" && factData?.facts?.length === 0 && (
+              <div className="rounded-md bg-gray-800 p-3 text-sm text-gray-300">
+                No additional facts available for this topic.
               </div>
-              
-              <div className={`text-sm font-semibold mb-1 ${canSpeak ? 'text-green-400' : 'text-red-400'}`}>
-                {canSpeak ? '🎤 YOUR TURN' : '🔇 LISTENING'}
-              </div>
-              
-              <div className={`text-xs p-2 rounded ${canSpeak ? 'bg-green-800 text-green-200' : 'bg-red-800 text-red-200'}`}>
-                {currentSpeaker === userPosition ? 'You are speaking' : `${remoteUser?.name || 'Opponent'} is speaking`}
-              </div>
-            </div>
-          </div>
-        )}
-        
-        {/* User Information Section */}
-        <div className="flex-1 flex items-center justify-center p-4">
-          <div className="text-center">
-            {localUser.name === "Anonymous" ? (
-              <div className="text-white">
-                <div className="text-xl mb-4">Setting up your session...</div>
-                <div className="text-gray-400 mb-6">
-                  Make sure you joined from the main page or wait for connection.
-                </div>
-                <button
-                  onClick={() => router.push('/')}
-                  className="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-6 rounded-lg transition-colors duration-200"
-                >
-                  Go to Main Page
-                </button>
-              </div>
-            ) : !remoteUser ? (
-              <div className="text-white">
-                <div className="text-xl mb-4">Welcome, {localUser.name}!</div>
-                <div className="text-gray-400 mb-4">
-                  Waiting for another participant to join the debate...
-                </div>
-                <div className="text-sm text-blue-300 mb-4">
-                  The debate will start automatically when both participants are ready.
-                </div>
-                <div className="flex items-center justify-center">
-                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white"></div>
-                </div>
-              </div>
-            ) : !debateActive ? (
-              <div className="text-white">
-                <div className="text-xl mb-4">Ready to Debate!</div>
-                <div className="text-gray-400 mb-4">
-                  You are connected with {remoteUser.name}
-                </div>
-                <div className="text-sm text-green-300 mb-4">
-                  The debate will begin shortly...
-                </div>
-                <button
-                  onClick={() => socket.emit('start-debate')}
-                  className="bg-green-600 hover:bg-green-700 text-white font-medium py-2 px-6 rounded-lg transition-colors duration-200"
-                >
-                  Start Debate
-                </button>
-              </div>
-            ) : (
-              <div className="text-white">
-                <div className="text-xl mb-4">Debate in Progress</div>
-                <div className="text-gray-400 mb-4">
-                  Debating with {remoteUser.name}
-                </div>
-                <div className="text-sm text-blue-300">
-                  Your position: {userPosition === 'user1' ? 'Opening' : 'Responding'}
-                </div>
-                <button onClick={handleGetFacts}>Get facts</button>
+            )}
+            {factStatus === "success" && factData?.facts?.length ? (
+              <ul className="space-y-3">
+                {factData.facts.map((item, index) => (
+                  <li key={index} className="rounded-lg bg-gray-800 p-3">
+                    <p className="text-sm text-gray-100 leading-snug mb-2">{item.fact}</p>
+                    <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-gray-400">
+                      {item.source && <span className="text-blue-300">Source: {item.source}</span>}
+                      {item.reliability && <span className="uppercase">Reliability: {item.reliability}</span>}
+                      {item.context && <span className="text-gray-300">Context: {item.context}</span>}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            {factStatus === "idle" && !debateQuestion && (
+              <div className="rounded-md bg-gray-800 p-3 text-sm text-gray-400">
+                Supporting facts will appear here once the debate begins.
               </div>
             )}
           </div>
+          
         </div>
       </div>
-      
-      {/* Control panel overlay */}
       <ControlPanel
         onHangup={hangup}
         onToggleVideo={toggleVideo}

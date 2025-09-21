@@ -342,10 +342,92 @@ const TOPIC_DATA = {
 };
 
 const TOPICS = Object.keys(TOPIC_DATA);
+const WAITING_FALLBACK_MS = 10_000;
+const MIN_IDEOLOGICAL_GAP = 45;
+
+const SPECTRUM_TOPIC_MAP = {
+  economic: "Economic",
+  social: "Social",
+  foreignPolicy: "Foreign Policy",
+  governance: "Governance",
+  cultural: "Cultural"
+};
+
+function randomQuestionForTopic(topic) {
+  const questions = TOPIC_DATA[topic] || [];
+  if (questions.length === 0) {
+    return null;
+  }
+  const index = Math.floor(Math.random() * questions.length);
+  return questions[index];
+}
 
 // Rooms keyed by roomId -> per-room debate state
 const rooms = new Map();
 const waitingQueue = [];
+
+function chooseRandomTopic() {
+  const topic = TOPICS[Math.floor(Math.random() * TOPICS.length)];
+  const question = randomQuestionForTopic(topic);
+  return {
+    topic,
+    question: question ?? null
+  };
+}
+
+function chooseTopicFromSpectra(spectrumA, spectrumB) {
+  if (!spectrumA || !spectrumB) {
+    return null;
+  }
+
+  let maxDiff = -Infinity;
+  let candidates = [];
+
+  for (const [key, topicName] of Object.entries(SPECTRUM_TOPIC_MAP)) {
+    const scoreA = typeof spectrumA[key] === "number" ? spectrumA[key] : null;
+    const scoreB = typeof spectrumB[key] === "number" ? spectrumB[key] : null;
+    if (scoreA === null || scoreB === null) {
+      continue;
+    }
+    const diff = Math.abs(scoreA - scoreB);
+    if (diff > maxDiff) {
+      maxDiff = diff;
+      candidates = [topicName];
+    } else if (diff === maxDiff) {
+      candidates.push(topicName);
+    }
+  }
+
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  const topic = candidates[Math.floor(Math.random() * candidates.length)];
+  const question = randomQuestionForTopic(topic);
+  if (!question) {
+    return null;
+  }
+  return { topic, question };
+}
+
+function determineTopicForUsers(userA, userB) {
+  const result = chooseTopicFromSpectra(userA?.spectrum, userB?.spectrum);
+  return result ?? chooseRandomTopic();
+}
+
+function scoresAreCompatible(scoreA, scoreB, minGap = MIN_IDEOLOGICAL_GAP) {
+  if (typeof scoreA !== "number" || typeof scoreB !== "number") {
+    return false;
+  }
+  if (scoreA === 0 || scoreB === 0) {
+    return false;
+  }
+  const sameSide = (scoreA > 0 && scoreB > 0) || (scoreA < 0 && scoreB < 0);
+  if (sameSide) {
+    return false;
+  }
+  return Math.abs(scoreA - scoreB) >= minGap;
+}
 
 function createRoomState(roomId) {
   return {
@@ -380,18 +462,6 @@ function generateRoomId() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function chooseRandomTopic() {
-  if (TOPICS.length === 0) {
-    return { topic: null, question: null };
-  }
-  const topic = TOPICS[Math.floor(Math.random() * TOPICS.length)];
-  const questions = TOPIC_DATA[topic] || [];
-  const question = questions.length > 0
-    ? questions[Math.floor(Math.random() * questions.length)]
-    : null;
-  return { topic, question };
-}
-
 function occupiedSlots(room) {
   return ["user1", "user2"].filter((pos) => Boolean(room.participants[pos]));
 }
@@ -420,8 +490,18 @@ function serializeParticipants(room) {
   const result = {};
   for (const pos of ["user1", "user2"]) {
     if (room.participants[pos]) {
-      const { name, affiliation } = room.participants[pos];
-      result[pos] = { name, affiliation };
+      const {
+        name,
+        affiliation,
+        username = null,
+        politicalScore = null
+      } = room.participants[pos];
+      result[pos] = {
+        name,
+        affiliation,
+        username: username ?? null,
+        politicalScore: typeof politicalScore === "number" ? politicalScore : null
+      };
     }
   }
   return result;
@@ -662,9 +742,15 @@ io.on("connection", (socket) => {
     if (data?.type === "userJoin") {
       const name = data.userName || "Anonymous";
       const affiliation = data.userAffiliation || "Unknown";
+      const username = data.username ?? null;
+      const politicalScore = typeof data.politicalScore === "number" ? data.politicalScore : null;
+      const spectrum = data.spectrum ?? null;
       socket.userInfo = {
         name,
         affiliation,
+        username,
+        politicalScore,
+        spectrum,
         socketId: socket.id,
         connectedAt: new Date().toISOString()
       };
@@ -677,61 +763,155 @@ io.on("connection", (socket) => {
   socket.on("join-matchmaking", (userData = {}) => {
     const name = userData?.name || socket.userInfo?.name || "Anonymous";
     const affiliation = userData?.affiliation || socket.userInfo?.affiliation || "Unknown";
+    const username = userData?.username ?? socket.userInfo?.username ?? null;
+    const politicalScore = typeof userData?.politicalScore === "number"
+      ? userData.politicalScore
+      : (typeof socket.userInfo?.politicalScore === "number" ? socket.userInfo.politicalScore : null);
+    const spectrum = userData?.spectrum ?? socket.userInfo?.spectrum ?? null;
 
     // Remove stale entries referencing this socket
     removeFromWaitingQueue(socket.id);
 
-    // Clean up queue from disconnected sockets
+    const now = Date.now();
+
+    // Clean up queue from disconnected sockets and normalise metadata
     for (let i = waitingQueue.length - 1; i >= 0; i--) {
-      if (!io.sockets.sockets.has(waitingQueue[i].socketId)) {
+      const entry = waitingQueue[i];
+      if (!io.sockets.sockets.has(entry.socketId)) {
         waitingQueue.splice(i, 1);
+        continue;
+      }
+      if (typeof entry.joinedAt !== "number") {
+        entry.joinedAt = now;
       }
     }
 
-    while (waitingQueue.length > 0) {
-      const opponent = waitingQueue.shift();
-      if (opponent.socketId === socket.id) {
-        continue;
+    const entrant = {
+      socketId: socket.id,
+      name,
+      affiliation,
+      username,
+      politicalScore,
+      spectrum,
+      joinedAt: now
+    };
+
+    const fallbackThreshold = now - WAITING_FALLBACK_MS;
+
+    const findOpponent = () => {
+      let bestIndex = -1;
+      let bestGap = -Infinity;
+
+      // Pass 1: look for the strongest ideological contrast
+      for (let i = 0; i < waitingQueue.length; i++) {
+        const candidate = waitingQueue[i];
+        if (candidate.socketId === socket.id) {
+          continue;
+        }
+        if (!io.sockets.sockets.has(candidate.socketId)) {
+          waitingQueue.splice(i, 1);
+          i -= 1;
+          continue;
+        }
+
+        if (scoresAreCompatible(candidate.politicalScore, entrant.politicalScore)) {
+          const gap = Math.abs(candidate.politicalScore - entrant.politicalScore);
+          if (gap > bestGap) {
+            bestGap = gap;
+            bestIndex = i;
+          }
+        }
       }
-      const opponentSocket = io.sockets.sockets.get(opponent.socketId);
-      if (!opponentSocket) {
-        continue;
+
+      if (bestIndex !== -1) {
+        return waitingQueue.splice(bestIndex, 1)[0];
       }
 
-      const roomId = generateRoomId();
-      const room = getRoom(roomId);
-      resetRoomState(room, { clearParticipants: true });
-      const { topic, question } = chooseRandomTopic();
-      room.topic = topic;
-      room.question = question;
+      // Pass 2: fallback to longest-waiting user past threshold
+      let fallbackIndex = -1;
+      let oldestJoin = Infinity;
+      for (let i = 0; i < waitingQueue.length; i++) {
+        const candidate = waitingQueue[i];
+        if (candidate.socketId === socket.id) {
+          continue;
+        }
+        if (!io.sockets.sockets.has(candidate.socketId)) {
+          waitingQueue.splice(i, 1);
+          i -= 1;
+          continue;
+        }
+        const joinedAt = typeof candidate.joinedAt === "number" ? candidate.joinedAt : now;
+        if (joinedAt <= fallbackThreshold && joinedAt < oldestJoin) {
+          oldestJoin = joinedAt;
+          fallbackIndex = i;
+        }
+      }
 
-      console.log(`[Matchmaking] Matched ${opponent.name} with ${name} in room ${roomId}`);
+      if (fallbackIndex !== -1) {
+        return waitingQueue.splice(fallbackIndex, 1)[0];
+      }
 
-      io.to(opponent.socketId).emit("match-found", {
-        roomId,
-        position: "user1",
-        match: { name, affiliation },
-        topic,
-        question
-      });
-      io.to(opponent.socketId).emit("matchmaking-status", { status: "matched", roomId });
+      return null;
+    };
 
-      io.to(socket.id).emit("match-found", {
-        roomId,
-        position: "user2",
-        match: { name: opponent.name, affiliation: opponent.affiliation },
-        topic,
-        question
-      });
-      io.to(socket.id).emit("matchmaking-status", { status: "matched", roomId });
+    const opponent = findOpponent();
 
+    if (!opponent) {
+      waitingQueue.push(entrant);
+      console.log(`[Matchmaking] ${name} queued for a match`);
+      socket.emit("matchmaking-status", { status: "waiting" });
       emitUsersUpdate();
       return;
     }
 
-    waitingQueue.push({ socketId: socket.id, name, affiliation });
-    console.log(`[Matchmaking] ${name} queued for a match`);
-    socket.emit("matchmaking-status", { status: "waiting" });
+    const opponentSocket = io.sockets.sockets.get(opponent.socketId);
+    if (!opponentSocket) {
+      waitingQueue.push(entrant);
+      console.log(`[Matchmaking] ${name} queued for a match (opponent lost)`);
+      socket.emit("matchmaking-status", { status: "waiting" });
+      emitUsersUpdate();
+      return;
+    }
+
+    const roomId = generateRoomId();
+    const room = getRoom(roomId);
+    resetRoomState(room, { clearParticipants: true });
+    const { topic, question } = determineTopicForUsers(opponent, entrant);
+    room.topic = topic;
+    room.question = question;
+
+    console.log(`[Matchmaking] Matched ${opponent.name} with ${name} in room ${roomId}`);
+
+    io.to(opponent.socketId).emit("match-found", {
+      roomId,
+      position: "user1",
+      match: {
+        name,
+        affiliation,
+        username,
+        politicalScore,
+        spectrum
+      },
+      topic,
+      question
+    });
+    io.to(opponent.socketId).emit("matchmaking-status", { status: "matched", roomId });
+
+    io.to(socket.id).emit("match-found", {
+      roomId,
+      position: "user2",
+      match: {
+        name: opponent.name,
+        affiliation: opponent.affiliation,
+        username: opponent.username ?? null,
+        politicalScore: typeof opponent.politicalScore === "number" ? opponent.politicalScore : null,
+        spectrum: opponent.spectrum ?? null
+      },
+      topic,
+      question
+    });
+    io.to(socket.id).emit("matchmaking-status", { status: "matched", roomId });
+
     emitUsersUpdate();
   });
 
@@ -747,6 +927,9 @@ io.on("connection", (socket) => {
   socket.on("join-debate", (userData = {}) => {
     const name = userData?.name || "Anonymous";
     const affiliation = userData?.affiliation || "Unknown";
+    const username = userData?.username ?? null;
+    const politicalScore = typeof userData?.politicalScore === "number" ? userData.politicalScore : null;
+    const spectrum = userData?.spectrum ?? null;
     const requestedRoomId = (userData?.roomId ?? "default").toString().trim() || "default";
     const room = getRoom(requestedRoomId);
     const channel = debateRoomChannel(room.id);
@@ -755,6 +938,9 @@ io.on("connection", (socket) => {
     socket.userInfo = {
       name,
       affiliation,
+      username,
+      politicalScore,
+      spectrum,
       socketId: socket.id,
       connectedAt: new Date().toISOString()
     };
@@ -780,7 +966,7 @@ io.on("connection", (socket) => {
 
     const existingSlot = findParticipantSlot(room, socket.id);
     if (existingSlot) {
-      room.participants[existingSlot] = { socketId: socket.id, name, affiliation };
+      room.participants[existingSlot] = { socketId: socket.id, name, affiliation, username, politicalScore, spectrum };
       socket.join(channel);
       socket.currentRoomId = room.id;
       console.log(`[Debate:${room.id}] ${name} rejoined as ${existingSlot}`);
@@ -805,13 +991,15 @@ io.on("connection", (socket) => {
     }
 
     const position = count === 0 ? "user1" : "user2";
-    room.participants[position] = { socketId: socket.id, name, affiliation };
+    room.participants[position] = { socketId: socket.id, name, affiliation, username, politicalScore, spectrum };
 
     socket.join(channel);
     socket.currentRoomId = room.id;
 
     if (!room.topic || !room.question) {
-      const { topic, question } = chooseRandomTopic();
+      const slots = occupiedSlots(room).map((slot) => room.participants[slot]);
+      const topicInfo = slots.length >= 2 ? determineTopicForUsers(slots[0], slots[1]) : null;
+      const { topic, question } = topicInfo ?? chooseRandomTopic();
       room.topic = topic;
       room.question = question;
     }
@@ -830,7 +1018,7 @@ io.on("connection", (socket) => {
     if (otherId) {
       io.to(otherId).emit("user-joined", {
         roomId: room.id,
-        user: { name, affiliation },
+        user: { name, affiliation, username, politicalScore, spectrum },
         position
       });
     }

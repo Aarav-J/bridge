@@ -63,12 +63,18 @@ function findMatch(newUser, waitingQueue, activeRooms, io) {
         user1: {
             socketId: matchUser.socketId,
             name: matchUser.name,
-            affiliation: matchUser.affiliation
+            affiliation: matchUser.affiliation,
+            username: matchUser.username ?? null,
+            politicalScore: typeof matchUser.politicalScore === "number" ? matchUser.politicalScore : null,
+            spectrum: matchUser.spectrum ?? null
         },
         user2: {
             socketId: newUser.socketId,
             name: newUser.name,
-            affiliation: newUser.affiliation
+            affiliation: newUser.affiliation,
+            username: newUser.username ?? null,
+            politicalScore: typeof newUser.politicalScore === "number" ? newUser.politicalScore : null,
+            spectrum: newUser.spectrum ?? null
         },
         createdAt: new Date().toISOString()
     };
@@ -83,16 +89,22 @@ function findMatch(newUser, waitingQueue, activeRooms, io) {
         position: "user1",
         match: {
             name: newUser.name,
-            affiliation: newUser.affiliation
+            affiliation: newUser.affiliation,
+            username: newUser.username ?? null,
+            politicalScore: typeof newUser.politicalScore === "number" ? newUser.politicalScore : null,
+            spectrum: newUser.spectrum ?? null
         }
     });
-    
+
     io.to(newUser.socketId).emit("match-found", {
         roomId,
         position: "user2",
         match: {
             name: matchUser.name,
-            affiliation: matchUser.affiliation
+            affiliation: matchUser.affiliation,
+            username: matchUser.username ?? null,
+            politicalScore: typeof matchUser.politicalScore === "number" ? matchUser.politicalScore : null,
+            spectrum: matchUser.spectrum ?? null
         }
     });
     
