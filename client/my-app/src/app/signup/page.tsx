@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import useStore from "@/store/useStore";
 import { supabase } from "../../utils/supabaseClient";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
@@ -15,6 +16,8 @@ interface SignupFormData {
 }
 
 export default function SignupPage() {
+  const setUserId = useStore((state) => state.setUserId);
+  const setUserData = useStore((state) => state.setUserData);
   const [formData, setFormData] = useState<SignupFormData>({
     fullName: "",
     username: "",
@@ -161,7 +164,21 @@ export default function SignupPage() {
       setIsSubmitting(false);
       return;
     }
-    // Redirect to quiz
+
+    // Set Zustand state manager fields
+    setUserId(userId);
+    setUserData({
+      fullName: formData.fullName,
+      username: formData.username,
+      email: formData.email,
+      age: parseInt(formData.age),
+      password: formData.password,
+      quizCompleted: false,
+      signupDate: new Date().toISOString(),
+      overall_affiliation: undefined,
+    });
+
+    // Route to quiz (no query param needed)
     router.push('/quiz');
   };
 

@@ -2,63 +2,36 @@
 
 import Link from "next/link";
 import { useState, useEffect } from "react";
-
-interface UserData {
-  fullName: string;
-  username: string;
-  email: string;
-  age: number;
-  password: string;
-  quizCompleted: boolean;
-  quizResults?: {
-    politicalLean: string;
-    spectrum: {
-      economic: number;
-      social: number;
-      foreignPolicy: number;
-      governance: number;
-      cultural: number;
-    };
-  };
-  signupDate: string;
-}
-
-interface EditableUserData {
-  fullName: string;
-  username: string;
-  email: string;
-  age: string;
-}
+import useStore from "@/store/useStore";
+import { supabase } from "@/utils/supabaseClient";
 
 export default function AccountPage() {
-  const [userData, setUserData] = useState<UserData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [isEditing, setIsEditing] = useState(false);
-  const [editFormData, setEditFormData] = useState<EditableUserData>({
-    fullName: "",
-    username: "",
-    email: "",
-    age: ""
-  });
-  const [editErrors, setEditErrors] = useState<Partial<EditableUserData>>({});
-  const [isSaving, setIsSaving] = useState(false);
+  const userId = useStore((state) => state.userId);
+  const userData = useStore((state) => state.userData);
+  const setUserData = useStore((state) => state.setUserData);
 
+  // Example: fetch user data from API using userId from zustand
   useEffect(() => {
-    // localStorage is NO LONGER
-    // const storedUserData = localStorage.getItem('userData');
-    if (storedUserData) {
-      const parsedData = JSON.parse(storedUserData);
-      setUserData(parsedData);
-      // Initialize edit form with current data
-      setEditFormData({
-        fullName: parsedData.fullName || "",
-        username: parsedData.username || "",
-        email: parsedData.email || "",
-        age: parsedData.age?.toString() || ""
-      });
+    async function fetchUserData() {
+      if (!userId) {
+        setIsLoading(false);
+        return;
+      }
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', userId)
+        .single();
+      if (error) {
+        setUserData(null);
+      } else {
+        setUserData(data);
+      }
+      setIsLoading(false);
     }
-    setIsLoading(false);
-  }, []);
+    fetchUserData();
+  }, [userId, setUserData]);
 
   const getPoliticalColor = (score: number) => {
     if (score < -30) return "text-blue-400";
@@ -88,87 +61,8 @@ export default function AccountPage() {
 
   const overallPosition = userData ? calculateOverallPosition() : 0;
 
-  // Form validation
-  const validateEditForm = (): boolean => {
-    const newErrors: Partial<EditableUserData> = {};
 
-    if (!editFormData.fullName.trim()) {
-      newErrors.fullName = "Full name is required";
-    }
 
-    if (!editFormData.username.trim()) {
-      newErrors.username = "Username is required";
-    } else if (editFormData.username.length < 3) {
-      newErrors.username = "Username must be at least 3 characters";
-    }
-
-    if (!editFormData.email.trim()) {
-      newErrors.email = "Email is required";
-    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(editFormData.email)) {
-      newErrors.email = "Please enter a valid email address";
-    }
-
-    if (!editFormData.age.trim()) {
-      newErrors.age = "Age is required";
-    } else {
-      const age = parseInt(editFormData.age);
-      if (isNaN(age) || age < 13 || age > 120) {
-        newErrors.age = "Please enter a valid age (13-120)";
-      }
-    }
-
-    setEditErrors(newErrors);
-    return Object.keys(newErrors).length === 0;
-  };
-
-  const handleEditInputChange = (field: keyof EditableUserData, value: string) => {
-    setEditFormData(prev => ({ ...prev, [field]: value }));
-    // Clear error when user starts typing
-    if (editErrors[field]) {
-      setEditErrors(prev => ({ ...prev, [field]: undefined }));
-    }
-  };
-
-  const handleSave = async () => {
-    if (!validateEditForm() || !userData) {
-      return;
-    }
-
-    setIsSaving(true);
-
-    // Simulate API call delay
-    await new Promise(resolve => setTimeout(resolve, 1000));
-
-    // Update user data
-    const updatedUserData = {
-      ...userData,
-      fullName: editFormData.fullName,
-      username: editFormData.username,
-      email: editFormData.email,
-      age: parseInt(editFormData.age)
-    };
-
-    // Save to localStorage
-    // localStorage is NO LONGER
-    // localStorage.setItem('userData', JSON.stringify(updatedUserData));
-    setUserData(updatedUserData);
-    setIsEditing(false);
-    setIsSaving(false);
-  };
-
-  const handleCancel = () => {
-    // Reset form data to original values
-    if (userData) {
-      setEditFormData({
-        fullName: userData.fullName || "",
-        username: userData.username || "",
-        email: userData.email || "",
-        age: userData.age?.toString() || ""
-      });
-    }
-    setEditErrors({});
-    setIsEditing(false);
-  };
 
   if (isLoading) {
     return (
@@ -178,7 +72,8 @@ export default function AccountPage() {
     );
   }
 
-  if (!userData) {
+
+  if (!userId || !userData) {
     return (
       <div className="min-h-screen bg-gray-900 flex items-center justify-center">
         <div className="text-center">
@@ -196,7 +91,7 @@ export default function AccountPage() {
   }
 
   // Get initials for profile picture
-  const initials = userData.fullName
+  const initials = userData.fullName ? userData.fullName : "John Doe"
     .split(' ')
     .map(name => name.charAt(0))
     .join('')
@@ -210,8 +105,10 @@ export default function AccountPage() {
     day: 'numeric'
   });
 
-  // Get political spectrum data or use defaults
-  const politicalSpectrum = userData.quizResults?.spectrum || {
+  // Prefer Zustand quiz results if available, otherwise fallback to Supabase
+  const zustandQuizResults = useStore((state) => state.userData?.quizResults);
+  const quizResults = zustandQuizResults || userData.quizResults;
+  const politicalSpectrum = quizResults?.spectrum || {
     economic: 0,
     social: 0,
     foreignPolicy: 0,
@@ -219,7 +116,7 @@ export default function AccountPage() {
     cultural: 0
   };
 
-  const politicalLean = userData.quizResults?.politicalLean || 'Not determined';
+  const politicalLean = userData.overall_affiliation || 'Not determined';
 
   return (
     <div className="min-h-screen bg-gray-900">
@@ -247,14 +144,14 @@ export default function AccountPage() {
           <div className="bg-gradient-to-r from-blue-600 to-purple-600 px-8 py-12">
             <div className="flex items-center">
               <div className="w-20 h-20 bg-white bg-opacity-20 rounded-full flex items-center justify-center mr-6">
-                <span className="text-black text-2xl font-bold">JD</span>
+                <span className="text-black text-2xl font-bold">{initials}</span>
               </div>
               <div>
                 <h1 className="text-3xl font-bold text-white">{userData.fullName}</h1>
                 <p className="text-blue-100 text-lg">{userData.email}</p>
                 <div className="mt-2">
                   <span className="inline-block bg-white bg-opacity-20 text-black text-sm px-3 py-1 rounded-full">
-                    {userData.politicalLean}
+                    {userData.overall_affiliation || 'No Affiliation'}
                   </span>
                 </div>
               </div>
@@ -267,166 +164,34 @@ export default function AccountPage() {
             <div className="max-w-2xl">
               <div className="flex items-center justify-between mb-6">
                 <h2 className="text-xl font-semibold text-white">Basic Information</h2>
-                {!isEditing && (
-                  <button
-                    onClick={() => setIsEditing(true)}
-                    className="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg transition-colors duration-200 flex items-center"
-                  >
-                    <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                    </svg>
-                    Edit Profile
-                  </button>
-                )}
               </div>
-
-              {isEditing ? (
-                /* Edit Form */
-                <div className="space-y-6">
-                  {/* Full Name */}
-                  <div>
-                    <label htmlFor="editFullName" className="block text-sm font-medium text-gray-300 mb-2">
-                      Full Name
-                    </label>
-                    <input
-                      type="text"
-                      id="editFullName"
-                      value={editFormData.fullName}
-                      onChange={(e) => handleEditInputChange('fullName', e.target.value)}
-                      className={`w-full px-4 py-3 bg-gray-700 border rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
-                        editErrors.fullName ? 'border-red-500' : 'border-gray-600'
-                      }`}
-                      placeholder="Enter your full name"
-                    />
-                    {editErrors.fullName && (
-                      <p className="mt-1 text-sm text-red-400">{editErrors.fullName}</p>
-                    )}
-                  </div>
-
-                  {/* Username */}
-                  <div>
-                    <label htmlFor="editUsername" className="block text-sm font-medium text-gray-300 mb-2">
-                      Username
-                    </label>
-                    <input
-                      type="text"
-                      id="editUsername"
-                      value={editFormData.username}
-                      onChange={(e) => handleEditInputChange('username', e.target.value)}
-                      className={`w-full px-4 py-3 bg-gray-700 border rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
-                        editErrors.username ? 'border-red-500' : 'border-gray-600'
-                      }`}
-                      placeholder="Choose a username"
-                    />
-                    {editErrors.username && (
-                      <p className="mt-1 text-sm text-red-400">{editErrors.username}</p>
-                    )}
-                  </div>
-
-                  {/* Email */}
-                  <div>
-                    <label htmlFor="editEmail" className="block text-sm font-medium text-gray-300 mb-2">
-                      Email Address
-                    </label>
-                    <input
-                      type="email"
-                      id="editEmail"
-                      value={editFormData.email}
-                      onChange={(e) => handleEditInputChange('email', e.target.value)}
-                      className={`w-full px-4 py-3 bg-gray-700 border rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
-                        editErrors.email ? 'border-red-500' : 'border-gray-600'
-                      }`}
-                      placeholder="Enter your email"
-                    />
-                    {editErrors.email && (
-                      <p className="mt-1 text-sm text-red-400">{editErrors.email}</p>
-                    )}
-                  </div>
-
-                  {/* Age */}
-                  <div>
-                    <label htmlFor="editAge" className="block text-sm font-medium text-gray-300 mb-2">
-                      Age
-                    </label>
-                    <input
-                      type="number"
-                      id="editAge"
-                      value={editFormData.age}
-                      onChange={(e) => handleEditInputChange('age', e.target.value)}
-                      className={`w-full px-4 py-3 bg-gray-700 border rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
-                        editErrors.age ? 'border-red-500' : 'border-gray-600'
-                      }`}
-                      placeholder="Enter your age"
-                      min="13"
-                      max="120"
-                    />
-                    {editErrors.age && (
-                      <p className="mt-1 text-sm text-red-400">{editErrors.age}</p>
-                    )}
-                  </div>
-
-                  {/* Action Buttons */}
-                  <div className="flex gap-4 pt-4">
-                    <button
-                      onClick={handleSave}
-                      disabled={isSaving}
-                      className="bg-green-600 hover:bg-green-700 disabled:bg-gray-600 text-white font-medium py-3 px-6 rounded-lg transition-colors duration-200 flex items-center"
-                    >
-                      {isSaving ? (
-                        <>
-                          <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
-                          Saving...
-                        </>
-                      ) : (
-                        <>
-                          <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                          </svg>
-                          Save Changes
-                        </>
-                      )}
-                    </button>
-                    <button
-                      onClick={handleCancel}
-                      disabled={isSaving}
-                      className="bg-gray-600 hover:bg-gray-700 disabled:bg-gray-500 text-white font-medium py-3 px-6 rounded-lg transition-colors duration-200 flex items-center"
-                    >
-                      <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                      </svg>
-                      Cancel
-                    </button>
-                  </div>
+              {/* Display Mode Only */}
+              <div className="space-y-4">
+                <div className="flex justify-between items-center py-3 border-b border-gray-700">
+                  <span className="text-gray-300">Full Name</span>
+                  <span className="text-white font-medium">{userData.fullName}</span>
                 </div>
-              ) : (
-                /* Display Mode */
-                <div className="space-y-4">
-                  <div className="flex justify-between items-center py-3 border-b border-gray-700">
-                    <span className="text-gray-300">Full Name</span>
-                    <span className="text-white font-medium">{userData.fullName}</span>
-                  </div>
-                  <div className="flex justify-between items-center py-3 border-b border-gray-700">
-                    <span className="text-gray-300">Username</span>
-                    <span className="text-white font-medium">{userData.username}</span>
-                  </div>
-                  <div className="flex justify-between items-center py-3 border-b border-gray-700">
-                    <span className="text-gray-300">Email</span>
-                    <span className="text-white font-medium">{userData.email}</span>
-                  </div>
-                  <div className="flex justify-between items-center py-3 border-b border-gray-700">
-                    <span className="text-gray-300">Age</span>
-                    <span className="text-white font-medium">{userData.age} years old</span>
-                  </div>
-                  <div className="flex justify-between items-center py-3 border-b border-gray-700">
-                    <span className="text-gray-300">Political Lean</span>
-                    <span className="text-white font-medium">{politicalLean}</span>
-                  </div>
-                  <div className="flex justify-between items-center py-3">
-                    <span className="text-gray-300">Member Since</span>
-                    <span className="text-white font-medium">{joinDate}</span>
-                  </div>
+                <div className="flex justify-between items-center py-3 border-b border-gray-700">
+                  <span className="text-gray-300">Username</span>
+                  <span className="text-white font-medium">{userData.username}</span>
                 </div>
-              )}
+                <div className="flex justify-between items-center py-3 border-b border-gray-700">
+                  <span className="text-gray-300">Email</span>
+                  <span className="text-white font-medium">{userData.email}</span>
+                </div>
+                <div className="flex justify-between items-center py-3 border-b border-gray-700">
+                  <span className="text-gray-300">Age</span>
+                  <span className="text-white font-medium">{userData.age} years old</span>
+                </div>
+                <div className="flex justify-between items-center py-3 border-b border-gray-700">
+                  <span className="text-gray-300">Political Lean</span>
+                  <span className="text-white font-medium">{politicalLean}</span>
+                </div>
+                <div className="flex justify-between items-center py-3">
+                  <span className="text-gray-300">Member Since</span>
+                  <span className="text-white font-medium">{joinDate}</span>
+                </div>
+              </div>
             </div>
 
             {/* Overall Political Spectrum Visualizer - Only show if quiz is completed */}
