@@ -116,28 +116,14 @@ export default function SignupPage() {
     // 1. Create user in Supabase Auth
     const { data, error } = await supabase.auth.signUp({
       email: formData.email,
-      password: formData.username + formData.age // Example: use username+age as password (replace with real password logic)
+      password: formData.password
     });
 
-<<<<<<< HEAD
-    // Store user data in localStorage for demo purposes
-    const userData = {
-      fullName: formData.fullName,
-      username: formData.username,
-      email: formData.email,
-      age: parseInt(formData.age),
-      password: formData.password, // Note: In production, this should be hashed
-      quizCompleted: false,
-      signupDate: new Date().toISOString()
-    };
-    localStorage.setItem('userData', JSON.stringify(userData));
-=======
     if (error) {
       setErrors(prev => ({ ...prev, email: error.message }));
       setIsSubmitting(false);
       return;
     }
->>>>>>> supabase-auth
 
     const userId = data?.user?.id;
     if (!userId) {
@@ -175,7 +161,6 @@ export default function SignupPage() {
       setIsSubmitting(false);
       return;
     }
-    console.error("yoo it made it");
     // Redirect to quiz
     router.push('/quiz');
   };
