@@ -1,36 +1,45 @@
 "use client";
 
 import Link from "next/link";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import useStore from "@/store/useStore";
-import { supabase } from "@/utils/supabaseClient";
+import { fetchUserProfile, getPoliticalLabel } from "@/utils/userProfile";
 
 export default function AccountPage() {
   const [isLoading, setIsLoading] = useState(true);
   const userId = useStore((state) => state.userId);
   const userData = useStore((state) => state.userData);
   const setUserData = useStore((state) => state.setUserData);
+  const userDataRef = useRef(userData);
 
-  // Example: fetch user data from API using userId from zustand
   useEffect(() => {
-    async function fetchUserData() {
+    userDataRef.current = userData;
+  }, [userData]);
+
+  useEffect(() => {
+    let active = true;
+
+    const hydrateProfile = async () => {
       if (!userId) {
         setIsLoading(false);
         return;
       }
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', userId)
-        .single();
-      if (error) {
-        setUserData(null);
+      const profile = await fetchUserProfile(userId, userDataRef.current ?? undefined);
+      if (!active) return;
+
+      if (profile) {
+        setUserData(profile);
       } else {
-        setUserData(data);
+        setUserData(null);
       }
       setIsLoading(false);
-    }
-    fetchUserData();
+    };
+
+    hydrateProfile();
+
+    return () => {
+      active = false;
+    };
   }, [userId, setUserData]);
 
   const getPoliticalColor = (score: number) => {
@@ -39,14 +48,6 @@ export default function AccountPage() {
     if (score < 10) return "text-gray-300";
     if (score < 30) return "text-red-300";
     return "text-red-400";
-  };
-
-  const getPoliticalLabel = (score: number) => {
-    if (score < -30) return "Very Liberal";
-    if (score < -10) return "Liberal";
-    if (score < 10) return "Moderate";
-    if (score < 30) return "Conservative";
-    return "Very Conservative";
   };
 
   // Calculate overall political position
@@ -91,7 +92,8 @@ export default function AccountPage() {
   }
 
   // Get initials for profile picture
-  const initials = userData.fullName ? userData.fullName : "John Doe"
+  const nameForInitials = userData.fullName?.trim() || userData.email || "User";
+  const initials = nameForInitials
     .split(' ')
     .map(name => name.charAt(0))
     .join('')
@@ -99,15 +101,17 @@ export default function AccountPage() {
     .slice(0, 2);
 
   // Format join date
-  const joinDate = new Date(userData.signupDate).toLocaleDateString('en-US', {
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric'
-  });
+  const joinDateObject = userData.signupDate ? new Date(userData.signupDate) : null;
+  const joinDate = joinDateObject && !Number.isNaN(joinDateObject.getTime())
+    ? joinDateObject.toLocaleDateString('en-US', {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric'
+      })
+    : 'Unknown';
 
   // Prefer Zustand quiz results if available, otherwise fallback to Supabase
-  const zustandQuizResults = useStore((state) => state.userData?.quizResults);
-  const quizResults = zustandQuizResults || userData.quizResults;
+  const quizResults = userData?.quizResults;
   const politicalSpectrum = quizResults?.spectrum || {
     economic: 0,
     social: 0,
@@ -116,7 +120,9 @@ export default function AccountPage() {
     cultural: 0
   };
 
-  const politicalLean = userData.overall_affiliation || 'Not determined';
+  const politicalLean = typeof userData.overall_affiliation === 'number'
+    ? getPoliticalLabel(userData.overall_affiliation)
+    : userData.politicalLean || 'Not determined';
 
   return (
     <div className="min-h-screen bg-gray-900">

@@ -2,6 +2,7 @@
 
 import useStore from '@/store/useStore';
 import { supabase } from '../../utils/supabaseClient';
+import { getPoliticalLabel } from '@/utils/userProfile';
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
@@ -157,17 +158,33 @@ export default function QuizPage() {
         alert('Error saving political spectrum: ' + spectrumError.message);
         return;
       }
-
       // 3. Update Zustand userData
-      setUserDataStore({
-        ...userData,
-        quizCompleted: true,
-        quizResults: {
-          answers,
-          spectrum,
-          completedAt: new Date().toISOString()
-        },
-        overall_affiliation: Math.round(spectrum.overall)
+      setUserDataStore((prev) => {
+        const base = prev ?? {
+          fullName: userData?.fullName ?? '',
+          username: userData?.username ?? '',
+          email: userData?.email ?? '',
+          age: userData?.age ?? null,
+          quizCompleted: false,
+          signupDate: userData?.signupDate ?? new Date().toISOString(),
+          overall_affiliation: userData?.overall_affiliation ?? null,
+          politicalLean: userData?.politicalLean ?? null,
+        };
+
+        const roundedOverall = Math.round(spectrum.overall);
+
+        return {
+          ...base,
+          quizCompleted: true,
+          overall_affiliation: roundedOverall,
+          politicalLean: getPoliticalLabel(roundedOverall),
+          quizResults: {
+            ...base.quizResults,
+            answers,
+            spectrum,
+            completedAt: new Date().toISOString(),
+          },
+        };
       });
     }
 

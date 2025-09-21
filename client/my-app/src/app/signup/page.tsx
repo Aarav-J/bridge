@@ -172,10 +172,11 @@ export default function SignupPage() {
       username: formData.username,
       email: formData.email,
       age: parseInt(formData.age),
-      password: formData.password,
       quizCompleted: false,
+      quizResults: undefined,
       signupDate: new Date().toISOString(),
-      overall_affiliation: undefined,
+      overall_affiliation: null,
+      politicalLean: null,
     });
 
     // Route to quiz (no query param needed)

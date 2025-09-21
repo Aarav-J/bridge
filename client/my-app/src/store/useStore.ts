@@ -1,38 +1,71 @@
 import {create} from 'zustand'
+import {persist, createJSONStorage} from 'zustand/middleware'
+
+export interface PoliticalSpectrumScores {
+    economic: number;
+    social: number;
+    foreignPolicy: number;
+    governance: number;
+    cultural: number;
+}
+
+export interface QuizResults {
+    spectrum?: PoliticalSpectrumScores;
+    answers?: unknown;
+    completedAt?: string;
+}
 
 export interface UserData {
     fullName: string;
     username: string;
     email: string;
-    age: number;
-    password: string;
+    age?: number | null;
     quizCompleted: boolean;
-    quizResults?: {
-        politicalLean: string;
-        spectrum: {
-            economic: number;
-            social: number;
-            foreignPolicy: number;
-            governance: number;
-            cultural: number;
-        };
-    };
-    signupDate: string;
-    overall_affiliation?: number;
+    quizResults?: QuizResults;
+    signupDate?: string | null;
+    overall_affiliation?: number | null;
+    politicalLean?: string | null;
 }
+
+type SetUserDataInput = UserData | null | ((prev: UserData | null) => UserData | null);
 
 type StoreState = {
-    userId: string;
-    setUserId: (id: string) => void;
+    userId: string | null;
+    setUserId: (id: string | null) => void;
     userData: UserData | null;
-    setUserData: (data: UserData | null) => void;
+    setUserData: (updater: SetUserDataInput) => void;
+    clearSession: () => void;
 }
 
-const useStore = create<StoreState>((set) => ({
-    userId: '',
-    setUserId: (id: string) => set({ userId: id }),
-    userData: null,
-    setUserData: (data: UserData | null) => set({ userData: data }),
-}))
-
+const useStore = create(
+  persist<StoreState>(
+    (set) => ({
+      userId: null,
+      setUserId: (id) => set({ userId: id }),
+      userData: null,
+      setUserData: (updater) => set((state) => ({
+        userData: typeof updater === 'function'
+          ? (updater as (prev: UserData | null) => UserData | null)(state.userData)
+          : updater,
+      })),
+      clearSession: () => set({ userId: null, userData: null }),
+    }),
+    {
+      name: 'bridge-user-store',
+      storage: createJSONStorage(() => {
+        if (typeof window === 'undefined') {
+          return {
+            getItem: () => null,
+            setItem: () => undefined,
+            removeItem: () => undefined,
+            clear: () => undefined,
+            key: () => null,
+            length: 0,
+          } as Storage;
+        }
+        return window.sessionStorage;
+      }),
+    }
+  )
+);
 export default useStore

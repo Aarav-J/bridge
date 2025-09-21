@@ -4,14 +4,21 @@ import Link from "next/link";
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { io, Socket } from "socket.io-client";
+import useStore from "@/store/useStore";
+import { fetchUserProfile, getPoliticalLabel } from "@/utils/userProfile";
+import { supabase } from "@/utils/supabaseClient";
+import UserProfile from "@/app/components/UserProfile";
 
 const SOCKET_URL = process.env.NEXT_PUBLIC_SOCKET_URL?.trim() || "http://localhost:3000";
 const API_BASE = SOCKET_URL.replace(/\/+$/, "");
-import UserProfile from "@/app/components/UserProfile";
 
 export default function HomePage() {
-  const [userData, setUserData] = useState<any>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const userData = useStore((state) => state.userData);
+  const userId = useStore((state) => state.userId);
+  const setUserData = useStore((state) => state.setUserData);
+  const setUserId = useStore((state) => state.setUserId);
+  const clearSession = useStore((state) => state.clearSession);
+  const [isLoading, setIsLoading] = useState(!userData);
   const [socket, setSocket] = useState<Socket | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
@@ -21,12 +28,44 @@ export default function HomePage() {
   const router = useRouter();
 
   useEffect(() => {
-    const storedUserData = localStorage.getItem('userData');
-    if (storedUserData) {
-      setUserData(JSON.parse(storedUserData));
-    }
-    setIsLoading(false);
-  }, [router]);
+    let active = true;
+
+    const hydrateSession = async () => {
+      if (userData && userId) {
+        setIsLoading(false);
+        return;
+      }
+
+      setIsLoading(true);
+      const { data: sessionData } = await supabase.auth.getSession();
+      if (!active) return;
+
+      const authUserId = sessionData.session?.user?.id ?? null;
+      if (!authUserId) {
+        clearSession();
+        setIsLoading(false);
+        return;
+      }
+
+      setUserId(authUserId);
+
+      if (!userData) {
+        const profile = await fetchUserProfile(authUserId);
+        if (!active) return;
+        if (profile) {
+          setUserData(profile);
+        }
+      }
+
+      setIsLoading(false);
+    };
+
+    hydrateSession();
+
+    return () => {
+      active = false;
+    };
+  }, [clearSession, setUserData, setUserId, userData, userId]);
 
   useEffect(() => {
     // Initialize Socket.IO connection
@@ -131,6 +170,11 @@ export default function HomePage() {
       return;
     }
 
+    if (!userData) {
+      alert("Please sign in before starting a call.");
+      return;
+    }
+
     setIsStarting(true);
     console.log("Starting video call with user data:", userData);
 
@@ -138,7 +182,9 @@ export default function HomePage() {
     socket.emit("message", {
       type: "userJoin",
       userName: userData.fullName,
-      userAffiliation: userData.politicalLean
+      userAffiliation: userData.politicalLean ?? (typeof userData.overall_affiliation === "number"
+        ? getPoliticalLabel(userData.overall_affiliation)
+        : "Undeclared")
     });
 
     console.log("Sent user join message to server:", {
@@ -150,7 +196,9 @@ export default function HomePage() {
     // Navigate directly to debate page without URL parameters
     socket.emit("join-matchmaking", {
       name: userData.fullName,
-      affiliation: userData.politicalLean
+      affiliation: userData.politicalLean ?? (typeof userData.overall_affiliation === "number"
+        ? getPoliticalLabel(userData.overall_affiliation)
+        : "Undeclared")
     });
 
     try {
@@ -197,7 +245,7 @@ export default function HomePage() {
                 <p className="text-white">Loading...</p>
               </div>
             ) : userData ? (
-              <UserProfile />
+              <UserProfile user={userData} />
             ) : (
               <div className="bg-gray-800 rounded-lg p-8 shadow-xl max-w-md w-full text-center">
                 <div className="mb-6">
