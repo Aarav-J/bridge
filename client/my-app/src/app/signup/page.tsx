@@ -162,7 +162,7 @@ export default function SignupPage() {
       return;
     }
     // Redirect to quiz
-    router.push('/quiz');
+    router.push(`/quiz?id=${userId}`);
   };
 
   return (
