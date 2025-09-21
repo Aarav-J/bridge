@@ -82,7 +82,9 @@ export default function HomePage() {
           JSON.stringify({
             roomId: payload.roomId,
             position: payload.position,
-            opponent: payload.match || null
+            opponent: payload.match || null,
+            topic: payload.topic ?? null,
+            question: payload.question ?? null
           })
         );
       } catch (err) {

@@ -303,6 +303,46 @@ const DEBATE_PHASES = [
   { phase: 6, duration: 60,  speaker: "user2", description: "Closing statement - User 2" }
 ];
 
+const TOPIC_DATA = {
+  "Economic": [
+    "Should the minimum wage be $15/hour?",
+    "Should student loan debt be forgiven?",
+    "Should taxes on the rich be higher?",
+    "Should the government give people money for free (UBI)?",
+    "Should corporations pay lower taxes to grow the economy?"
+  ],
+  "Social": [
+    "Should guns be more strictly controlled?",
+    "Should everyone have healthcare?",
+    "Should colleges limit hate speech?",
+    "Should the government track personal data for safety?",
+    "Should schools teach about diversity and inclusion?"
+  ],
+  "Foreign Policy": [
+    "Should the U.S. reduce troops overseas?",
+    "Should the U.S. punish China over trade or human rights?",
+    "Should the U.S. accept refugees from other countries?",
+    "Should the U.S. help other countries with money?",
+    "Should the U.S. focus on climate agreements with other nations?"
+  ],
+  "Governance": [
+    "Should we get rid of the Electoral College?",
+    "Should Congress have term limits?",
+    "Should voting be required?",
+    "Should campaign money be limited?",
+    "Should the president have less power?"
+  ],
+  "Cultural": [
+    "Should cancel culture exist?",
+    "Does the media have a political bias?",
+    "Should schools teach about gender identity?",
+    "Is cultural appropriation disrespectful?",
+    "Should TV and movies include more minorities?"
+  ]
+};
+
+const TOPICS = Object.keys(TOPIC_DATA);
+
 // Rooms keyed by roomId -> per-room debate state
 const rooms = new Map();
 const waitingQueue = [];
@@ -315,7 +355,9 @@ function createRoomState(roomId) {
     timeRemaining: 0,
     currentSpeaker: null,
     participants: {},
-    timer: null
+    timer: null,
+    topic: null,
+    question: null
   };
 }
 
@@ -336,6 +378,18 @@ function generateRoomId() {
     return randomUUID();
   }
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function chooseRandomTopic() {
+  if (TOPICS.length === 0) {
+    return { topic: null, question: null };
+  }
+  const topic = TOPICS[Math.floor(Math.random() * TOPICS.length)];
+  const questions = TOPIC_DATA[topic] || [];
+  const question = questions.length > 0
+    ? questions[Math.floor(Math.random() * questions.length)]
+    : null;
+  return { topic, question };
 }
 
 function occupiedSlots(room) {
@@ -482,6 +536,8 @@ function resetRoomState(room, { clearParticipants = false } = {}) {
 
   if (clearParticipants) {
     room.participants = {};
+    room.topic = null;
+    room.question = null;
   }
 }
 
@@ -645,20 +701,27 @@ io.on("connection", (socket) => {
       const roomId = generateRoomId();
       const room = getRoom(roomId);
       resetRoomState(room, { clearParticipants: true });
+      const { topic, question } = chooseRandomTopic();
+      room.topic = topic;
+      room.question = question;
 
       console.log(`[Matchmaking] Matched ${opponent.name} with ${name} in room ${roomId}`);
 
       io.to(opponent.socketId).emit("match-found", {
         roomId,
         position: "user1",
-        match: { name, affiliation }
+        match: { name, affiliation },
+        topic,
+        question
       });
       io.to(opponent.socketId).emit("matchmaking-status", { status: "matched", roomId });
 
       io.to(socket.id).emit("match-found", {
         roomId,
         position: "user2",
-        match: { name: opponent.name, affiliation: opponent.affiliation }
+        match: { name: opponent.name, affiliation: opponent.affiliation },
+        topic,
+        question
       });
       io.to(socket.id).emit("matchmaking-status", { status: "matched", roomId });
 
@@ -725,7 +788,9 @@ io.on("connection", (socket) => {
         roomId: room.id,
         position: existingSlot,
         participants: serializeParticipants(room),
-        debateActive: room.active
+        debateActive: room.active,
+        topic: room.topic,
+        question: room.question
       });
       emitUsersUpdate();
       return;
@@ -745,12 +810,20 @@ io.on("connection", (socket) => {
     socket.join(channel);
     socket.currentRoomId = room.id;
 
+    if (!room.topic || !room.question) {
+      const { topic, question } = chooseRandomTopic();
+      room.topic = topic;
+      room.question = question;
+    }
+
     console.log(`[Debate:${room.id}] ${name} joined as ${position}`);
     socket.emit("joined-debate", {
       roomId: room.id,
       position,
       participants: serializeParticipants(room),
-      debateActive: room.active
+      debateActive: room.active,
+      topic: room.topic,
+      question: room.question
     });
 
     const otherId = getOtherParticipantSocketId(room, socket.id);

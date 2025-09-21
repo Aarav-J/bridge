@@ -10,6 +10,9 @@ SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key_here
 # NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 # SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 
+# Socket server (update if your signalling server runs elsewhere)
+NEXT_PUBLIC_SOCKET_URL=http://localhost:3000
+
 # Note: 
 # - NEXT_PUBLIC_ variables are exposed to the browser
 # - Variables without NEXT_PUBLIC_ are server-side only

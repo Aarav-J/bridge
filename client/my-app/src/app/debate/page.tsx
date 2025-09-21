@@ -5,6 +5,7 @@ import { useRef, useEffect, useState, useMemo } from "react";
 import Video from "../components/Video";
 import ControlPanel from "../components/ControlPanel";
 import { useRouter, useSearchParams } from "next/navigation";
+import { factCall } from "@/utils/factCall";
 
 const configuration: RTCConfiguration = {
   iceServers: [
@@ -42,6 +43,10 @@ export default function DebatePage() {
   const [remoteUser, setRemoteUser] = useState<UserInfo | null>(null);
   const [localUser, setLocalUser] = useState<UserInfo>({ name: "Anonymous", affiliation: "Unknown" });
   const [userPosition, setUserPosition] = useState<string | null>(null); // "user1" or "user2"
+  const [debateTopic, setDebateTopic] = useState<string | null>(null);
+  const [debateQuestion, setDebateQuestion] = useState<string | null>(null);
+  const [factData, setFactData] = useState<{ facts: Array<{ fact: string; source?: string; reliability?: string; context?: string }>; topic: string | null; last_updated?: string } | null>(null);
+  const [factStatus, setFactStatus] = useState<"idle" | "loading" | "error" | "success">("idle");
   
   // Debate timer states
   const [debateActive, setDebateActive] = useState(false);
@@ -64,7 +69,26 @@ export default function DebatePage() {
   const searchParams = useSearchParams();
   const roomId = useMemo(() => searchParams.get("room")?.trim() || "default", [searchParams]);
   const roomIdRef = useRef(roomId);
-  
+
+  const persistFactsToSession = (facts: any[], lastUpdated?: string, topicOverride?: string | null) => {
+    try {
+      const stored = sessionStorage.getItem('activeMatch');
+      if (!stored) return;
+      const parsed = JSON.parse(stored);
+      if (parsed?.roomId && parsed.roomId !== roomIdRef.current) return;
+      parsed.facts = facts;
+      if (lastUpdated) {
+        parsed.last_updated = lastUpdated;
+      }
+      if (topicOverride) {
+        parsed.topic = topicOverride;
+      }
+      sessionStorage.setItem('activeMatch', JSON.stringify(parsed));
+    } catch (err) {
+      console.warn('Unable to persist facts to sessionStorage', err);
+    }
+  };
+
   const startButtonRef = useRef<HTMLButtonElement>(null);
   const hangupButtonRef = useRef<HTMLButtonElement>(null);
   const videoButtonRef = useRef<HTMLButtonElement>(null);
@@ -75,6 +99,8 @@ export default function DebatePage() {
   const localStreamRef = useRef<MediaStream | null>(null);
   const userPositionRef = useRef<string | null>(null);
   const readySentRef = useRef(false);
+  const factAbortRef = useRef<AbortController | null>(null);
+  const fetchedQuestionRef = useRef<string | null>(null);
 
   useEffect(() => {
     roomIdRef.current = roomId;
@@ -98,10 +124,87 @@ export default function DebatePage() {
       if (!remoteUser && parsed?.opponent) {
         setRemoteUser(parsed.opponent);
       }
+      if (parsed?.topic) {
+        setDebateTopic(parsed.topic);
+      }
+      if (parsed?.question) {
+        setDebateQuestion(parsed.question);
+      }
+      if (Array.isArray(parsed?.facts) && parsed.facts.length > 0) {
+        setFactData({
+          facts: parsed.facts,
+          topic: parsed.topic ?? parsed.question ?? null,
+          last_updated: parsed.last_updated
+        });
+        setFactStatus("success");
+        fetchedQuestionRef.current = parsed.question ?? null;
+      }
     } catch (err) {
       console.warn('Failed to parse activeMatch from sessionStorage', err);
     }
   }, [roomId, remoteUser]);
+
+  useEffect(() => {
+    if (!debateQuestion || !remoteUser) {
+      if (factAbortRef.current) {
+        factAbortRef.current.abort();
+        factAbortRef.current = null;
+      }
+      if (factStatus !== "idle") {
+        setFactStatus("idle");
+        setFactData(null);
+      }
+      fetchedQuestionRef.current = null;
+      return;
+    }
+
+    if (factStatus === "loading" && fetchedQuestionRef.current === debateQuestion) {
+      return;
+    }
+
+    if (factStatus === "success" && fetchedQuestionRef.current === debateQuestion) {
+      return;
+    }
+
+    const controller = new AbortController();
+    factAbortRef.current = controller;
+    setFactStatus("loading");
+
+    (async () => {
+      try {
+        const result = await factCall({ question: debateQuestion });
+        if (controller.signal.aborted) return;
+
+        const factsArray = Array.isArray(result?.facts) ? result.facts : [];
+        const data = {
+          facts: factsArray,
+          topic: result?.topic ?? debateTopic ?? debateQuestion,
+          last_updated: result?.last_updated
+        };
+        setFactData(data);
+        setFactStatus("success");
+        fetchedQuestionRef.current = debateQuestion;
+        persistFactsToSession(factsArray, result?.last_updated, data.topic ?? null);
+      } catch (err) {
+        if (controller.signal.aborted) return;
+        console.error('Failed to fetch supporting facts', err);
+        setFactData(null);
+        setFactStatus("error");
+        fetchedQuestionRef.current = null;
+      } finally {
+        if (!controller.signal.aborted && factAbortRef.current === controller) {
+          factAbortRef.current = null;
+        }
+      }
+    })();
+
+    return () => {
+      controller.abort();
+      if (factAbortRef.current === controller) {
+        factAbortRef.current = null;
+      }
+    };
+  }, [debateQuestion, debateTopic, remoteUser]);
   useEffect(() => {
     let isMounted = true;
 
@@ -161,6 +264,12 @@ export default function DebatePage() {
           readySentRef.current = false;
         }
       });
+      if (data.topic !== undefined) {
+        setDebateTopic(data.topic ?? null);
+      }
+      if (data.question !== undefined) {
+        setDebateQuestion(data.question ?? null);
+      }
     });
 
     socket.on("user-joined", (data) => {
@@ -372,6 +481,10 @@ export default function DebatePage() {
     return getVolume;
   };
 
+  const handleGetFacts = async () => { 
+    const facts = await factCall({ question: debateQuestion || "General Politics" });
+    console.log(facts); 
+  }
   const startVolumeAnalysis = () => {
     if (!audioContextRef.current) {
       audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -507,13 +620,17 @@ export default function DebatePage() {
   const toggleVideo = (): void => {
     const stream = localStreamRef.current;
     if (stream) {
-      const videoTrack = stream.getVideoTracks()[0];
+      const videoTrack = stream.getVideoTracks()[0]; 
+      const audioTrack = stream.getAudioTracks()[0];
       if (videoTrack) {
         videoTrack.enabled = !videoTrack.enabled;
+        audioTrack.enabled = !audioTrack.enabled;
+        setIsAudioOn(audioTrack.enabled);
         setIsVideoOn(videoTrack.enabled);
 
         // Don't touch audio when toggling video - audio is controlled by debate muting logic
         console.log(`Video toggled to: ${videoTrack.enabled}`);
+        console.log(`Audio toggled to: ${audioTrack.enabled} (controlled by debate logic)`);
       }
     }
   };
@@ -559,6 +676,11 @@ export default function DebatePage() {
     readySentRef.current = false;
     setUserPosition(null);
     userPositionRef.current = null;
+    setDebateTopic(null);
+    setDebateQuestion(null);
+    setFactStatus("idle");
+    setFactData(null);
+    fetchedQuestionRef.current = null;
     closePeerConnection();
   };
 
@@ -572,6 +694,10 @@ export default function DebatePage() {
     reason?: string;
   }) => {
     console.log("Cleaning up call", { notifyServer, redirect, reason });
+    if (factAbortRef.current) {
+      factAbortRef.current.abort();
+      factAbortRef.current = null;
+    }
     resetRemoteState();
 
     try {
@@ -797,7 +923,7 @@ export default function DebatePage() {
             label={remoteUser?.affiliation || ""}
           />
           {/* Remote volume indicator */}
-          <div className="absolute bottom-4 left-4 bg-black bg-opacity-60 rounded-lg p-2 min-w-20">
+          <div className="absolute bottom-4 right-4 bg-black bg-opacity-60 rounded-lg p-2 min-w-20">
             <div className="text-white text-xs mb-1">Volume</div>
             <div className="flex items-center space-x-1">
               <div className="w-2 h-8 bg-gray-600 rounded-sm relative overflow-hidden">
@@ -820,32 +946,64 @@ export default function DebatePage() {
       {/* Right panel - 50% of horizontal space for debate timer */}
       <div className="w-1/2 h-full bg-gray-800 flex flex-col">
         
-        {/* Topic and Facts Section */}
-        <div className="bg-gray-900 p-4 m-4 rounded-lg">
-          <div className="text-white">
-            <h2 className="text-xl font-bold mb-3 text-center">Debate Topic</h2>
-            <div className="bg-blue-900 bg-opacity-50 p-3 rounded-lg mb-4">
-              <p className="text-blue-100 text-center text-sm leading-relaxed">
-                "Should artificial intelligence be regulated by government agencies?"
+        <div className="bg-gray-900 p-4 m-4 rounded-lg border border-blue-900/40">
+          <div className="text-white space-y-3">
+            <div>
+              <h2 className="text-xl font-bold mb-2 text-center text-blue-200">Debate Topic</h2>
+              <p className="text-center text-sm text-blue-100">
+                {debateTopic ? debateTopic : 'Topic will be assigned once both participants join.'}
               </p>
             </div>
-            
-            <h3 className="text-md font-semibold mb-2 text-center">Key Facts</h3>
-            <div className="bg-gray-800 p-3 rounded-lg space-y-2">
-              <div className="text-xs text-gray-300">
-                • AI market projected to reach $1.8 trillion by 2030
-              </div>
-              <div className="text-xs text-gray-300">
-                • 85% of businesses plan to implement AI by 2025
-              </div>
-              <div className="text-xs text-gray-300">
-                • Current AI regulations vary significantly between countries
-              </div>
-              <div className="text-xs text-gray-300">
-                • 67% of consumers express concerns about AI privacy
-              </div>
+            <div className="bg-gray-800 p-3 rounded-lg min-h-[90px] flex items-center justify-center">
+              <p className="text-sm text-gray-200 text-center">
+                {debateQuestion ? debateQuestion : 'Waiting for matchup...'}
+              </p>
             </div>
           </div>
+        </div>
+
+        <div className="bg-gray-900 p-4 mx-4 mb-4 rounded-lg border border-emerald-900/40">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-lg font-semibold text-emerald-200">Supporting Facts</h3>
+            {factData?.last_updated && (
+              <span className="text-xs text-gray-400">Updated {factData.last_updated}</span>
+            )}
+          </div>
+          {factStatus === "loading" && (
+            <div className="flex items-center justify-center text-emerald-300 text-sm py-6">
+              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-emerald-400 mr-3" />
+              Gathering contextual facts...
+            </div>
+          )}
+          {factStatus === "error" && (
+            <div className="text-sm text-red-300 bg-red-900/40 rounded-md p-3">
+              Unable to fetch supporting facts right now.
+            </div>
+          )}
+          {factStatus === "success" && factData?.facts?.length === 0 && (
+            <div className="text-sm text-gray-300 bg-gray-800 rounded-md p-3">
+              No additional facts available for this topic.
+            </div>
+          )}
+          {factStatus === "success" && factData?.facts?.length ? (
+            <ul className="space-y-3">
+              {factData.facts.map((item, index) => (
+                <li key={index} className="bg-gray-800 rounded-lg p-3">
+                  <p className="text-sm text-gray-100 leading-snug mb-2">{item.fact}</p>
+                  <div className="flex flex-wrap text-xs text-gray-400 gap-x-3 gap-y-1">
+                    {item.source && <span className="text-blue-300">Source: {item.source}</span>}
+                    {item.reliability && <span className="uppercase">Reliability: {item.reliability}</span>}
+                    {item.context && <span className="text-gray-300">Context: {item.context}</span>}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {factStatus === "idle" && !debateQuestion && (
+            <div className="text-sm text-gray-400 bg-gray-800 rounded-md p-3">
+              Supporting facts will appear here once the debate begins.
+            </div>
+          )}
         </div>
 
         {/* Compact Timer Section */}
@@ -930,6 +1088,7 @@ export default function DebatePage() {
                 <div className="text-sm text-blue-300">
                   Your position: {userPosition === 'user1' ? 'Opening' : 'Responding'}
                 </div>
+                <button onClick={handleGetFacts}>Get facts</button>
               </div>
             )}
           </div>

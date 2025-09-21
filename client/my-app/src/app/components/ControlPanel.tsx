@@ -22,7 +22,7 @@ const ControlPanel: React.FC<ControlPanelProps> = ({
   timeButtonRef
 }) => {
   return (
-    <div className="absolute bottom-8 left-1/2 transform -translate-x-1/2 flex gap-4 bg-gray-900 bg-opacity-80 backdrop-blur-sm rounded-full px-6 py-3">
+    <div className="absolute bottom-[46%] left-1/4 transform -translate-x-1/2 flex gap-4 bg-gray-900 bg-opacity-80 backdrop-blur-sm rounded-full px-6 py-3">
       {/* Hang up call button */}
       <button 
         ref={hangupButtonRef}
