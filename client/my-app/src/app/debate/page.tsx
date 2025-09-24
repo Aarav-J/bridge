@@ -1194,7 +1194,7 @@ export default function DebatePage() {
                   )}
                   highlight={remoteIsActiveSpeaker}
                 />
-                <div className="absolute bottom-4 left-4 min-w-24 rounded-lg bg-black/70 p-2 backdrop-blur-sm">
+                <div className="absolute bottom-4 right-4 min-w-24 rounded-lg bg-black/70 p-2 backdrop-blur-sm">
                   <div className="text-white text-xs mb-1">Opponent Volume</div>
                   <div className="flex items-center space-x-1">
                     <div className="relative h-8 w-2 overflow-hidden rounded-sm bg-gray-700">
