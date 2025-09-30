@@ -1,7 +1,7 @@
 # Bridge - Political Debate Platform
 
 <div align="center">
-[![View on Devpost](https://img.shields.io/badge/View%20on-Devpost-blue?style=for-the-badge&logo=devpost)](https://devpost.com/software/bridge-8xjdwu)
+[![View on Devpost](https://img.shields.io/badge/View%20on-Devpost-blue?style=for-the-badge&logo=devpost)](https://devpost.com/software/bridge-8xjdwu)]
 *Breaking down political echo chambers through structured, AI-powered debates*
 
 [![Next.js](https://img.shields.io/badge/Next.js-15.5.3-black?style=flat-square&logo=next.js)](https://nextjs.org/)
